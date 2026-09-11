@@ -1,0 +1,696 @@
+% ============================================
+% MAZE SOLVER ROBOT - PROJECT PROPOSAL
+% ============================================
+\documentclass[aspectratio=169,11pt]{beamer}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, fit, backgrounds, shadows}
+\usepackage{circuitikz}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{colortbl}  % REQUIRED for \cellcolor
+\usepackage{listings}
+\usepackage{hyperref}
+
+% --- Theme & Colors ---
+\usetheme{moloch}
+
+
+% For the title page specifically, also set these:
+\setbeamercolor{title}{fg=teal!80!black}
+\setbeamercolor{subtitle}{fg=teal!60!black}
+\setbeamercolor{author}{fg=black}
+\setbeamercolor{institute}{fg=gray}
+\setbeamercolor{date}{fg=gray}
+
+
+% --- Title Info ---
+\title[Maze Solver Robot]{Maze Solver Robot}
+\subtitle{Project Proposal --- Autonomous Maze Exploration and Shortest-Path Solving on ATmega32}
+\author{Md. Ariful Islam \and Hasan Ferdous Mahee \and B. M. Sufian Ashraf}
+\institute{Department of Computer Science and Engineering}
+\date{\today}
+
+% --- Custom Commands ---
+\newcommand{\highlight}[1]{\textcolor{teal!80!black}{\textbf{#1}}}
+\newcommand{\pin}[1]{\texttt{\textcolor{orange!80!black}{#1}}}
+
+% ============================================
+\begin{document}
+% ============================================
+
+% --- Title Slide ---
+\begin{frame}
+    \titlepage
+\end{frame}
+
+% --- Outline ---
+\begin{frame}{Outline}
+    \tableofcontents
+\end{frame}
+
+% ============================================
+\section{1. Motivation}
+% ============================================
+\begin{frame}{Problem Statement}
+    \small
+    \begin{block}{What is the Problem?}
+        \small Autonomous navigation through an \highlight{unknown environment} is a core problem in mobile robotics --- search-and-rescue robots, warehouse pickers, and cleaning robots all need to explore, build an internal map, and find an efficient path without any prior knowledge of the layout or human guidance.
+    \end{block}
+
+    \vspace{0.25cm}
+    \begin{columns}[T]
+        \begin{column}{0.48\textwidth}
+            \textbf{Why is it Important?}
+            \begin{itemize}\setlength{\itemsep}{0pt}
+                \item Core capability behind search-and-rescue robotics
+                \item Foundation of SLAM and exploration algorithms
+                \item Directly transfers to warehouse/indoor navigation
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.48\textwidth}
+            \textbf{Why This Project?}
+            \begin{itemize}\setlength{\itemsep}{0pt}
+                \item Combines real-time control with classical search algorithms
+                \item Forces on-the-fly mapping under memory constraints
+                \item Natural, well-scoped extension of embedded control (ATmega32)
+            \end{itemize}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{Project Objectives}
+    \begin{block}{Main Objectives}
+        \begin{enumerate}
+            \item \highlight{Design and build} an autonomous robot capable of exploring an unknown maze of unit cells using wall-following sensors.
+            \item \highlight{Implement wall detection} using ultrasonic sensors on the front, left, and right of the robot.
+            \item \highlight{Implement an exploration algorithm} (flood-fill) that incrementally maps the maze and updates the shortest known path to the goal.
+            \item \highlight{Implement a run-time architecture:} explore the maze on the first run, then execute the fastest known path on a speed run.
+            \item \highlight{Develop precise motor control} with PWM speed regulation and closed-loop odometry via optical wheel encoders for accurate cell-to-cell moves and turns.
+            \item \highlight{Handle the dead-end edge case:} detect dead ends during exploration and backtrack correctly to continue the search.
+        \end{enumerate}
+    \end{block}
+\end{frame}
+
+% ============================================
+\section{2. Equipment}
+% ============================================
+\begin{frame}{Hardware Components}
+    \begin{table}
+        \centering
+        \tiny
+        \begin{tabular}{@{}lp{7.4cm}@{}}
+            \toprule
+            \textbf{Component} & \textbf{Purpose} \\
+            \midrule
+            ATmega32A & Central microcontroller; runs flood-fill, wall sensing, and motor control \\
+            3x HC-SR04 Ultrasonic Sensors & Front, left, and right wall detection at each cell \\
+            2x Wheel Encoders (Optical) & Optical encoder discs + sensors on each wheel for precise distance and turn odometry \\
+            L298N Motor Driver Module & Dual H-bridge module for PWM motor speed and direction control \\
+            DC TT Gear Motors & Provides differential drive locomotion \\
+            2WD Chassis + Wheels & Mechanical frame, wheels, and caster for mobility and stability \\
+            Status LEDs & Visual indication of robot state (exploring, dead-end, goal reached, speed run) \\
+            L7805 Voltage Regulator & Stabilizes 5V supply for MCU, sensors, and logic \\
+            3.7V 18650 Li-Ion Batteries (x3) & 3S configuration providing ~11.1V main power supply \\
+            18650 Battery Holder (3S) & Houses batteries and supplies power to driver and regulator \\
+            Crystal Oscillator (16 MHz) & External clock source for ATmega32A system clock \\
+            AVR ISP Programmer & In-System Programmer (ISP) for flashing code onto ATmega32A \\
+            \bottomrule
+        \end{tabular}
+    \end{table}
+\end{frame}
+
+\begin{frame}{Development Tools}
+    \scriptsize
+    \textbf{Software and Programming Tools}
+    \begin{itemize}\setlength{\itemsep}{0pt}
+        \item \highlight{Atmel Studio 7.0 / AVR-GCC} --- Writing and compiling the embedded C program
+        \item \highlight{AVRDUDE} --- Uploading the compiled firmware to the ATmega32
+        \item \highlight{Git} --- Version control and collaboration for the source code
+    \end{itemize}
+
+    \vspace{0.12cm}
+    \textbf{Hardware Development Tools}
+    \begin{itemize}\setlength{\itemsep}{0pt}
+        \item \highlight{AVR ISP Programmer} --- Programming the ATmega32 through ISP
+        \item \highlight{Breadboard + Jumper Wires} --- Circuit assembly, component connection, and hardware testing
+    \end{itemize}
+
+    \vspace{0.12cm}
+    \begin{alertblock}{Note}
+        \scriptsize All development will be done in C using AVR Libc, without the Arduino framework, allowing direct access to ATmega32 hardware registers --- including Timer1 input capture for reading three ultrasonic echoes.
+    \end{alertblock}
+\end{frame}
+
+% ============================================
+\section{3. System Design}
+% ============================================
+\begin{frame}{System Block Diagram}
+    \centering
+
+    \definecolor{themeTeal}{RGB}{8,92,92}
+    \definecolor{powerFill}{RGB}{235,246,240}
+    \definecolor{sensorFill}{RGB}{231,243,246}
+    \definecolor{mcuFill}{RGB}{244,235,241}
+    \definecolor{driverFill}{RGB}{248,241,230}
+    \definecolor{motorFill}{RGB}{249,237,237}
+    \definecolor{sonarFill}{RGB}{255,236,236}
+    \definecolor{indicatorFill}{RGB}{255,244,224}
+
+    \begin{tikzpicture}[
+        box/.style={
+            rectangle,
+            rounded corners=5pt,
+            draw=themeTeal,
+            line width=0.9pt,
+            minimum width=1.9cm,
+            minimum height=0.68cm,
+            align=center,
+            font=\tiny\bfseries,
+            drop shadow={
+                opacity=0.15,
+                shadow xshift=1pt,
+                shadow yshift=-1pt
+            }
+        },
+        sonarbox/.style={
+            box,
+            fill=sonarFill,
+            minimum height=0.56cm
+        },
+        line/.style={
+            line width=1.1pt,
+            draw=themeTeal!85!black
+        },
+        bigbox/.style={
+            rectangle,
+            rounded corners=8pt,
+            draw=themeTeal,
+            line width=1.2pt,
+            minimum width=2.6cm,
+            minimum height=2.5cm,
+            align=center,
+            font=\small\bfseries,
+            fill=mcuFill,
+            drop shadow={
+                opacity=0.18,
+                shadow xshift=1.5pt,
+                shadow yshift=-1.5pt
+            }
+        },
+        arrow/.style={
+            -{Stealth[length=2.2mm]},
+            line width=1pt,
+            draw=themeTeal
+        },
+        powerarrow/.style={
+            -{Stealth[length=2.2mm]},
+            line width=1.1pt,
+            draw=themeTeal!85!black
+        },
+        label/.style={
+            font=\tiny\bfseries,
+            fill=white,
+            draw=themeTeal!45,
+            rounded corners=2pt,
+            inner sep=1.2pt
+        }
+    ]
+
+        % Power supply
+        \node[box, fill=powerFill] at (-5.6,2.5) (battery)
+            {3x 3.7V Li-Ion\\($\sim$11.1V)};
+
+        \node[box, fill=powerFill] at (-3.3,2.5) (reg)
+            {L7805\\5V Reg.};
+
+        \draw[powerarrow] (battery.east) -- (reg.west);
+
+        % Microcontroller
+        \node[bigbox] at (0,0) (mcu)
+            {\textbf{ATmega32A}\\[3pt]
+             \scriptsize GPIO $\mid$ PWM\\[2pt]
+             \scriptsize Timer1 Input Capture\\[2pt]
+             \tiny (16MHz Clock)};
+
+        % Regulated 5V connection
+        \coordinate (vfive) at (0,1.4);
+
+        \draw[line]
+            (reg.south) -- ++(0,-0.3) -- (vfive)
+            node[pos=0.75, label] {+5V};
+
+        \draw[powerarrow]
+            (vfive) -- (mcu.north);
+
+        % Three ultrasonic sensors: front, left, right
+        \node[sonarbox, minimum width=2.1cm] at (-5.4, 1.35) (sonarL)
+            {HC-SR04\\Left Wall};
+
+        \node[sonarbox, minimum width=2.1cm] at (0, 2.55) (sonarF)
+            {HC-SR04\\Front Wall};
+
+        \node[sonarbox, minimum width=2.1cm] at (-5.4, -1.35) (sonarR)
+            {HC-SR04\\Right Wall};
+
+        \draw[arrow] (sonarL.east) -- ++(0.9,0)
+            |- ([yshift=0.55cm]mcu.west)
+            node[pos=0.32, above, label] {TRIG/ECHO};
+
+        \draw[arrow] (sonarF.south) -- ([xshift=-0.3cm]mcu.north)
+            node[pos=0.5, right=1pt, label] {TRIG/ECHO};
+
+        \draw[arrow] (sonarR.east) -- ++(0.9,0)
+            |- ([yshift=-0.55cm]mcu.west)
+            node[pos=0.32, below, label] {TRIG/ECHO};
+
+        % Status LED indicator block
+        \node[box, fill=indicatorFill, minimum width=2.1cm] at (0,-2.55) (ind)
+            {Status LEDs};
+
+        \draw[arrow] (mcu.south) -- ([xshift=-0.3cm]ind.north)
+            node[pos=0.5, right=1pt, label] {GPIO};
+
+        % Motor driver
+        \node[
+            box,
+            fill=driverFill,
+            minimum width=2.1cm,
+            minimum height=0.9cm
+        ] at (4.3,0) (driver)
+            {L298N\\Motor Driver};
+
+        \draw[arrow] (mcu.east) -- (driver.west)
+            node[midway, above=2pt, label] {PWM + DIR};
+
+        % Motor-supply route
+        \draw[powerarrow]
+            (battery.north)
+            -- ++(0,0.4)
+            -| (driver.north)
+            node[pos=0.68, above, label] {Motor Supply (11.1V)};
+
+        % Motors
+        \node[box, fill=motorFill] at (7.1,0.68) (motL)
+            {Left DC\\TT Motor};
+
+        \node[box, fill=motorFill] at (7.1,-0.68) (motR)
+            {Right DC\\TT Motor};
+
+        \draw[arrow]
+            ([yshift=0.17cm]driver.east)
+            -- ++(0.32,0)
+            |- (motL.west);
+
+        \draw[arrow]
+            ([yshift=-0.17cm]driver.east)
+            -- ++(0.32,0)
+            |- (motR.west);
+
+        % Wheel encoders (optical), mounted alongside the wheels
+        \node[box, fill=sonarFill, minimum width=1.7cm, minimum height=0.5cm] at (7.1,1.55) (encL)
+            {Left Encoder};
+
+        \node[box, fill=sonarFill, minimum width=1.7cm, minimum height=0.5cm] at (7.1,-1.55) (encR)
+            {Right Encoder};
+
+        \draw[arrow] (motL.north) -- (encL.south);
+        \draw[arrow] (motR.south) -- (encR.north);
+
+        \draw[arrow] (encL.west) -| ([xshift=-0.2cm]mcu.north)
+            node[pos=0.25, above, label] {\tiny Pulses};
+
+        \draw[arrow] (encR.west) -| ([xshift=-0.2cm]ind.south)
+            node[pos=0.25, below, label] {\tiny Pulses};
+
+    \end{tikzpicture}
+\end{frame}
+
+\begin{frame}[t]{Component Roles}
+    \scriptsize
+    \begin{columns}[T]
+        \begin{column}{0.48\textwidth}
+            \begin{block}{3x HC-SR04 Ultrasonic Sensors}
+                \begin{itemize}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+                    \item Mounted front, left, right; each returns distance-to-wall
+                    \item TRIG pulse $\rightarrow$ ECHO pulse width $\propto$ distance
+                    \item A cell wall is flagged present below a calibrated fixed threshold distance
+                    \item Timer1 input capture multiplexed across the three sensors for precise timing
+                \end{itemize}
+            \end{block}
+
+            \begin{block}{L298N Motor Driver Module}
+                \begin{itemize}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+                    \item Dual H-bridge module (drives 2 motors)
+                    \item Direction control via IN1--IN4 logic pins
+                    \item Speed control via ATmega32A PWM on ENA/ENB
+                \end{itemize}
+            \end{block}
+        \end{column}
+
+        \begin{column}{0.48\textwidth}
+            \begin{block}{DC TT Gear Motors + Optical Encoders}
+                \begin{itemize}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+                    \item 3V--6V rated motors (~150--200 RPM)
+                    \item Each wheel paired with an optical encoder for pulse counting
+                    \item Differential drive: 90\textdegree{} turns and cell-to-cell moves measured by encoder pulse count, not timing
+                \end{itemize}
+            \end{block}
+
+            \begin{block}{Status LEDs}
+                \begin{itemize}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+                    \item Indicate current robot state: exploring, dead-end/backtrack, goal reached, speed run
+                \end{itemize}
+            \end{block}
+
+            \begin{block}{Power System}
+                \begin{itemize}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+                    \item 3x 3.7V Li-Ion (3S): ~11.1V pack; L7805 steps down to clean 5V logic rail
+                \end{itemize}
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{ATmega32 Pin Assignment}
+    \begin{table}
+        \centering
+        \tiny
+        \begin{tabular}{@{}lllp{4.6cm}@{}}
+            \toprule
+            \textbf{Function} & \textbf{Port} & \textbf{Pins} & \textbf{Description} \\
+            \midrule
+            Front Sonar & PORTB & PB0 (TRIG), PB1/ICP1 (ECHO) & HC-SR04 front wall ranging \\
+            Left Sonar & PORTA & PA5 (TRIG), PA6 (ECHO) & HC-SR04 left wall ranging \\
+            Right Sonar & PORTA & PA7 (TRIG), PC7 (ECHO) & HC-SR04 right wall ranging \\
+            Motor Direction L & PORTD, PORTC & PD7, PC0 & Left motor direction control (L298N IN1, IN2) \\
+            Motor Direction R & PORTC & PC1, PC2 & Right motor direction control (L298N IN3, IN4) \\
+            PWM Output L & PORTD & PD4 (OC1B) & Timer1 PWM speed control for left motor (ENA) \\
+            PWM Output R & PORTD & PD5 (OC1A) & Timer1 PWM speed control for right motor (ENB) \\
+            Left Encoder & PORTD & PD2 (INT0) & Left wheel optical encoder pulse input \\
+            Right Encoder & PORTD & PD3 (INT1) & Right wheel optical encoder pulse input \\
+            Status LEDs & PORTC & PC3--PC5 & Digital outputs for robot-state indicator LEDs \\
+            ISP Programming & PORTB & PB5--PB7 & MOSI, MISO, SCK interface for AVR ISP \\
+            Reset Circuit & --- & Pin 9 (RESET) & Active-low reset with 10k$\Omega$ pull-up resistor \\
+            Clock Source & --- & Pins 12, 13 & XTAL1/XTAL2 with 16 MHz crystal \& 22pF caps \\
+            \bottomrule
+        \end{tabular}
+    \end{table}
+    \vspace{0.1cm}
+    \scriptsize\textcolor{gray}{Note: only PB1 uses hardware input capture (ICP1) for the front sonar; left/right echoes are timed via polling. Left/right encoders use the two external interrupt pins (INT0, INT1) for reliable pulse counting.}
+\end{frame}
+
+
+% ============================================
+\section{4. Role of the ATmega32}
+% ============================================
+\begin{frame}{ATmega32 --- Central Processing Unit}
+    \small
+    The ATmega32 is the \highlight{sole controller} of this project. It performs all sensing, mapping, decision-making, and actuation tasks --- there is no secondary microcontroller.
+
+    \vspace{0.2cm}
+    \begin{block}{Core Tasks Performed by ATmega32}
+        \small
+        \begin{enumerate}\setlength{\itemsep}{0pt}
+            \item \textbf{Wall Sensing:} Triggers and times all three ultrasonic sensors each cell
+            \item \textbf{Cell Mapping:} Records discovered walls into an in-memory maze grid
+            \item \textbf{Flood-Fill Computation:} Recomputes distance-to-goal values as new walls are discovered
+            \item \textbf{Motion Planning:} Chooses the next cell to move into based on current flood values
+            \item \textbf{Motor Control:} Executes forward moves and in-place turns using encoder pulse counts for closed-loop accuracy
+            \item \textbf{Run Management:} Tracks exploration vs. speed-run state and dead-end backtracking
+        \end{enumerate}
+    \end{block}
+\end{frame}
+
+\begin{frame}{ATmega32 Peripheral Usage}
+    \scriptsize
+    \setlength{\itemsep}{-2pt}
+    \begin{columns}[T]
+        \begin{column}{0.48\textwidth}
+            \begin{block}{Digital I/O (Sonar Trigger/Echo)}
+                \begin{itemize}\setlength{\itemsep}{-2pt}
+                    \item \textbf{PORTA/PORTB/PORTC:} TRIG outputs and ECHO inputs for 3 sensors
+                    \item Sensors triggered sequentially each cell to avoid cross-talk
+                \end{itemize}
+            \end{block}
+
+            \vspace{-0.15cm}
+            \begin{block}{Timer1 --- PWM \& Input Capture}
+                \begin{itemize}\setlength{\itemsep}{-2pt}
+                    \item \pin{OC1B} (PD4) $\rightarrow$ Left motor PWM speed (ENA)
+                    \item \pin{OC1A} (PD5) $\rightarrow$ Right motor PWM speed (ENB)
+                    \item \pin{ICP1} (PB1) $\rightarrow$ \highlight{Input capture for front-sonar echo timing}
+                \end{itemize}
+            \end{block}
+
+            \vspace{-0.15cm}
+            \begin{block}{GPIO (Motor Control)}
+                \begin{itemize}\setlength{\itemsep}{-2pt}
+                    \item PD7, PC0 $\rightarrow$ Left motor H-Bridge (IN1, IN2)
+                    \item PC1, PC2 $\rightarrow$ Right motor H-Bridge (IN3, IN4)
+                \end{itemize}
+            \end{block}
+        \end{column}
+        \begin{column}{0.48\textwidth}
+            \begin{block}{External Interrupts (Wheel Encoders)}
+                \begin{itemize}\setlength{\itemsep}{-2pt}
+                    \item \pin{INT0} (PD2) $\rightarrow$ Left wheel encoder pulse count
+                    \item \pin{INT1} (PD3) $\rightarrow$ Right wheel encoder pulse count
+                    \item Pulse counts drive closed-loop distance and turn control
+                \end{itemize}
+            \end{block}
+
+            \vspace{-0.15cm}
+            \begin{block}{SRAM --- Maze State}
+                \begin{itemize}\setlength{\itemsep}{-2pt}
+                    \item Wall bitmap: 4 bits/cell (N/E/S/W) for up to N$\times$N cells
+                    \item Flood-fill distance array: 1 byte/cell
+                    \item Fits comfortably within the ATmega32's 2KB SRAM
+                \end{itemize}
+            \end{block}
+
+            \vspace{-0.15cm}
+            \begin{block}{GPIO (Status LEDs)}
+                \begin{itemize}\setlength{\itemsep}{-2pt}
+                    \item \textbf{PC3--PC5:} indicate exploring, dead-end, and goal/speed-run states
+                \end{itemize}
+            \end{block}
+
+            \vspace{-0.15cm}
+            \begin{block}{Other Features}
+                \scriptsize
+                \textbf{Watchdog Timer:} reset on software hang
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+% ============================================
+\section{5. Maze Mapping and Algorithm}
+% ============================================
+\begin{frame}{Maze Representation and Flood-Fill}
+    \scriptsize
+    \begin{block}{Cell and Wall Representation}
+        \begin{itemize}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+            \item The maze is modeled as an \highlight{$N \times N$ grid of cells}, each with up to 4 walls (N, E, S, W)
+            \item Walls are discovered incrementally as the robot visits each cell and reads its 3 ultrasonic sensors
+            \item Each cell's wall state is stored as a \highlight{4-bit bitmap}; the full maze fits in well under 1KB of SRAM
+        \end{itemize}
+    \end{block}
+
+    \vspace{0.15cm}
+    \begin{block}{Why Flood-Fill?}
+        \begin{itemize}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+            \item Each cell holds an integer \highlight{distance-to-goal} value, initialized by Manhattan distance and updated by a BFS-style wave from the goal outward
+            \item When a new wall is discovered, only the affected region is recomputed --- \highlight{cheap enough to rerun after every move} on an 8-bit MCU
+            \item Guarantees the robot always moves toward a cell on a currently-shortest known path, without needing global replanning from scratch
+        \end{itemize}
+    \end{block}
+
+    \vspace{0.15cm}
+    \textbf{Operational Cycle:} \highlight{Run 1 (Exploration):} start from the entry cell, sense walls with the 3 sonars, explore the maze cell by cell, back out of dead ends when hit, and continue until the goal is reached --- the map and the shortest known path are remembered in SRAM. \highlight{Run 2 (Speed Run):} starting again from the entry cell, follow the remembered shortest path directly to the goal, with no further exploration.
+\end{frame}
+
+% ============================================
+\section{6. Implementation Plan}
+% ============================================
+
+\begin{frame}{Expected Outcome}
+    \begin{block}{Final Deliverable}
+        A fully assembled autonomous maze-solving robot that:
+        \begin{itemize}
+            \item Explores an \highlight{unknown maze of unit cells} using front/left/right wall sensing
+            \item Builds an internal map and computes the \highlight{shortest known path via flood-fill} as it explores
+            \item Reaches the goal cell on its exploration run, then executes a \highlight{fast, direct speed run} along the shortest discovered path
+            \item Reliably completes a maze of at least \highlight{3$\times$3 cells} within a bounded time and move budget
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\begin{frame}{Development Stages}
+    \scriptsize
+    \begin{columns}[T]
+        \begin{column}{0.48\textwidth}
+            \begin{block}{Stage 1: Project Update 1}
+                \textbf{Milestones:}
+                \begin{itemize}\setlength{\itemsep}{0pt}
+                    \item[$\square$] Assemble chassis, motors, and control circuit
+                    \item[$\square$] Integrate and calibrate 3x HC-SR04 sensors
+                    \item[$\square$] Implement encoder-based forward-move and 90\textdegree{}-turn primitives
+                    \item[$\square$] Sonars detect walls and show status via LEDs
+                \end{itemize}
+                \textbf{Deliverable:} A robot that reliably moves cell-to-cell and detects walls on three sides --- the base platform for maze solving
+            \end{block}
+        \end{column}
+
+        \begin{column}{0.48\textwidth}
+            \begin{block}{Stage 2: Final}
+                \textbf{Milestones:}
+                \begin{itemize}\setlength{\itemsep}{0pt}
+                    \item[$\square$] Implement maze grid storage and wall-bitmap updates
+                    \item[$\square$] Implement flood-fill computation and incremental updates
+                    \item[$\square$] Implement full exploration run to goal with dead-end handling
+                    \item[$\square$] Implement speed run along the shortest discovered path
+                    \item[$\square$] Full-maze testing, calibration, and LED signaling
+                \end{itemize}
+                \textbf{Deliverable:} Complete maze-solver robot demonstrating exploration, mapping, and a faster speed run
+            \end{block}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{Group Member Responsibilities}
+    \begin{table}
+        \centering
+        \footnotesize
+        \begin{tabular}{@{}lp{7.5cm}@{}}
+            \toprule
+            \textbf{Member} & \textbf{Primary Responsibilities} \\
+            \midrule
+            Hasan Ferdous Mahee & Hardware assembly, power system, and sonar integration \\
+            Md. Ariful Islam & Motion primitives (turns/moves) and wall-detection calibration \\
+            B. M. Sufian Ashraf & Maze representation, flood-fill algorithm, and run-state management \\
+            All Members & Testing, documentation, and presentation \\
+            \bottomrule
+        \end{tabular}
+    \end{table}
+\end{frame}
+
+% ============================================
+\section{7. Use of Other Controllers}
+% ============================================
+\begin{frame}{No Additional Controllers Used}
+    \begin{block}{Design Decision}
+        This project uses \highlight{only the ATmega32} microcontroller. No ESP32, Arduino, or Raspberry Pi is required.
+    \end{block}
+
+    \vspace{0.3cm}
+    \textbf{Justification:}
+    \begin{itemize}
+        \item Flood-fill on a small grid is cheap enough in both memory and compute for an 8-bit MCU
+        \item Sensor and motor I/O needs (3 sonar pairs, 2 PWM channels, 4 direction pins) fit well within the ATmega32's 32 available pins
+        \item A single controller keeps the system simpler, cheaper, and easier to debug than a dual-controller design
+        \item Direct register-level programming gives full control over sonar timing precision, which matters for reliable wall detection
+    \end{itemize}
+\end{frame}
+
+% ============================================
+\section{8. Testing and Success Criteria}
+% ============================================
+\begin{frame}{Testing Methodology}
+    \small
+    \begin{block}{Test Environment Setup}
+        \small
+        \begin{itemize}\setlength{\itemsep}{0pt}
+            \item \textbf{Maze:} Physical grid maze with uniform unit cells and vertical walls for reliable sonar reflection
+            \item \textbf{Maze Size:} 3$\times$3 cells, including one dead end and at least one intersection
+        \end{itemize}
+    \end{block}
+
+    \vspace{0.1cm}
+    \textbf{Test Procedures:}
+    \begin{enumerate}\setlength{\itemsep}{0pt}
+        \item \textbf{Unit Testing:} Verify each of the 3 sonar sensors independently against known distances
+        \item \textbf{Module Testing:} Test encoder-based forward-move and turn accuracy over repeated cycles
+        \item \textbf{Integration Testing:} Sonars detect walls correctly and status LEDs reflect robot state
+        \item \textbf{Full-Maze Testing:} Complete exploration run, followed by a speed run; measure both times
+        \item \textbf{Repeatability:} Run 5 consecutive full explore-then-speed-run cycles; record success/failure
+    \end{enumerate}
+\end{frame}
+
+\begin{frame}{Success Criteria}
+    \vspace{0.3cm}
+    \begin{block}{Essential Features (Must Have)}
+        \begin{itemize}\setlength{\itemsep}{4pt}
+            \item[$\checkmark$] Correctly detects walls on 3 sides at each cell
+            \item[$\checkmark$] Correctly detects and backtracks out of dead ends during exploration
+            \item[$\checkmark$] Completes full exploration of a 3$\times$3 maze and reaches the goal
+            \item[$\checkmark$] Flood-fill map stays consistent as walls are discovered
+            \item[$\checkmark$] Executes a speed run strictly faster than the exploration run, following the remembered path directly
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+% ============================================
+\section{9. Challenges and Future Scope}
+% ============================================
+
+\begin{frame}{Expected Challenges}
+    \begin{itemize}
+        \item \highlight{Sonar cross-talk} between the three simultaneously-mounted ultrasonic sensors
+        \item \highlight{Encoder calibration} for consistent pulse-count-to-distance and pulse-count-to-turn-angle mapping
+        \item \highlight{Wall-detection thresholding} under sensor noise near cell boundaries
+        \item \highlight{SRAM budgeting} for the wall bitmap and flood-fill arrays as maze size grows
+        \item \highlight{Dead-end handling} in the exploration algorithm --- reliable detection and backtracking
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Future Scope}
+    \small
+    \begin{columns}[T]
+        \begin{column}{0.48\textwidth}
+            \textbf{Short-Term Improvements}
+            \begin{itemize}\setlength{\itemsep}{0pt}
+                \item Integrate the \highlight{optical wheel encoders} (already acquired) for closed-loop odometry
+                \item Add a \highlight{gyroscope} for precise turn correction
+            \end{itemize}
+        \end{column}
+        \begin{column}{0.48\textwidth}
+            \textbf{Long-Term Extensions}
+            \begin{itemize}\setlength{\itemsep}{0pt}
+                \item Full \highlight{micromouse-style} speed optimization (smooth curves, ramped acceleration)
+                \item \highlight{Multi-robot maze solving} with shared map data
+                \item Port to \highlight{dynamic/reconfigurable mazes}
+                \item \highlight{Machine-learned} move policies as an alternative to flood-fill
+            \end{itemize}
+        \end{column}
+    \end{columns}
+
+    \vspace{0.2cm}
+    \begin{alertblock}{Real-World Applications}
+        Search-and-rescue robots, autonomous warehouse navigation, indoor drones, and educational micromouse competitions.
+    \end{alertblock}
+\end{frame}
+
+% --- Thank You ---
+\begin{frame}
+    \begin{center}
+        \Huge\textbf{Thank You!}
+
+        \vspace{1.5cm}
+        \normalsize
+        \textit{Maze Solver Robot --- ATmega32 Project Proposal}\\[5pt]
+        \textbf{Md. Ariful Islam \quad Hasan Ferdous Mahee \quad B. M. Sufian Ashraf}
+    \end{center}
+\end{frame}
+
+% ============================================
+\end{document}

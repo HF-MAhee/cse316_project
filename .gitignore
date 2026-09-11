@@ -1,0 +1,12 @@
+*.elf
+*.hex
+*.o
+*.aux
+*.fls
+*.nav
+*.out
+*.toc
+*.snm
+*.fdb_latexmk
+.DS_Store
+.vscode
