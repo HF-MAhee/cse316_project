@@ -4,6 +4,7 @@
 #include "sonar.h"
 #include "heading.h"
 #include "timer.h"
+#include "debug.h"
 
 static center_mode_t s_mode = CENTER_GYRO_ONLY;
 static int16_t       s_last_corr = 0;
@@ -98,6 +99,7 @@ void Drive_Tick(int16_t gyro_rate) {
             Motors_Pivot(cw, WALL_RECOVERY_PIVOT_PWM);
             s_recover_phase = 2;
             s_recover_until = millis() + WALL_RECOVERY_PIVOT_MS;
+            Debug_Str("  -> clear of wall, pivoting away\r\n");
             return;
         }
 
@@ -110,6 +112,7 @@ void Drive_Tick(int16_t gyro_rate) {
         s_recover_until = 0;
         s_emerg_side    = 0;
         s_emerg_since   = 0;
+        Debug_Str("  -> recovered, resuming normal driving\r\n");
         return;
     }
 
@@ -118,7 +121,11 @@ void Drive_Tick(int16_t gyro_rate) {
     // is too slow, and this must work even while the chassis is rocking --
     // a collision is exactly the moment sonar gets noisiest.
     if (l_near && !r_near) {
-        if (s_emerg_side != 1) { s_emerg_side = 1; s_emerg_since = millis(); }
+        if (s_emerg_side != 1) {
+            s_emerg_side = 1;
+            s_emerg_since = millis();
+            Debug_Str("COLLISION COURSE: left wall too close, steering right\r\n");
+        }
 
         // The ramped steer-away below still drives BOTH wheels forward -- it
         // only varies the split. If a chassis corner is physically caught on
@@ -135,6 +142,7 @@ void Drive_Tick(int16_t gyro_rate) {
             s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0; s_dbg.corr = 0;
             s_dbg.pwm_l = 0; s_dbg.pwm_r = 0;
             s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
+            Debug_Str("STUCK on left wall, steering alone didn't clear it -- reversing off\r\n");
             return;
         }
 
@@ -158,7 +166,11 @@ void Drive_Tick(int16_t gyro_rate) {
         return;
     }
     if (r_near && !l_near) {
-        if (s_emerg_side != 2) { s_emerg_side = 2; s_emerg_since = millis(); }
+        if (s_emerg_side != 2) {
+            s_emerg_side = 2;
+            s_emerg_since = millis();
+            Debug_Str("COLLISION COURSE: right wall too close, steering left\r\n");
+        }
 
         if ((millis() - s_emerg_since) > WALL_STUCK_MS) {
             Motors_SetLeft(DIR_REV,  WALL_RECOVERY_REV_PWM);
@@ -169,6 +181,7 @@ void Drive_Tick(int16_t gyro_rate) {
             s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0; s_dbg.corr = 0;
             s_dbg.pwm_l = 0; s_dbg.pwm_r = 0;
             s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
+            Debug_Str("STUCK on right wall, steering alone didn't clear it -- reversing off\r\n");
             return;
         }
 
@@ -190,6 +203,9 @@ void Drive_Tick(int16_t gyro_rate) {
 
     // Neither side is in emergency this tick -- clear the stuck timer so a
     // fresh contact later gets its own full WALL_STUCK_MS grace period.
+    if (s_emerg_side != 0) {
+        Debug_Str("clear of wall, resuming normal centring\r\n");
+    }
     s_emerg_side  = 0;
     s_emerg_since = 0;
 

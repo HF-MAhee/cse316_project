@@ -191,6 +191,7 @@ void Maze_Tick(int16_t gyro_rate) {
         Drive_Tick(gyro_rate);
         // If the front wall closes in first, stop short of it instead.
         if (Sonar_IsValid(SONAR_FRONT) && Sonar_Latest(SONAR_FRONT) < FRONT_STOP_CM) {
+            Debug_Str("front obstacle detected, stopping short\r\n");
             Drive_Stop();
             enter(ST_STOPPING);
             break;
