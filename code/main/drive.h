@@ -13,10 +13,12 @@ typedef enum {
 // WHY a correction was chosen, not just its value -- the previous logs could
 // not distinguish "wall term computed and small" from "wall term never ran".
 typedef enum {
-    BRANCH_NORMAL    = 0,
-    BRANCH_ROCKING   = 1,   // wall term applied at reduced gain
-    BRANCH_EMERG_L   = 2,   // hard steer right, left wall too close
-    BRANCH_EMERG_R   = 3    // hard steer left, right wall too close
+    BRANCH_NORMAL       = 0,
+    BRANCH_ROCKING      = 1,   // wall term applied at reduced gain
+    BRANCH_EMERG_L      = 2,   // hard steer right, left wall too close
+    BRANCH_EMERG_R      = 3,   // hard steer left, right wall too close
+    BRANCH_EMERG_RECOVER = 4   // steering alone didn't break wall contact --
+                                // backing off and pivoting clear instead
 } drive_branch_t;
 
 typedef struct {

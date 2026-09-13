@@ -218,6 +218,21 @@
 // straight into the other.
 #define WALL_EMERGENCY_CM      8
 
+// WALL-STUCK RECOVERY.
+// The ramped emergency steer above still drives BOTH wheels forward -- it
+// only varies the split. If a chassis corner physically catches the wall
+// (friction pins it), that forward-biased differential cannot rotate the
+// robot away: it just grinds along the wall at an angle instead of turning
+// off it. Observed on hardware. If a one-sided emergency stays active this
+// long without clearing, stop assuming steering alone will break contact:
+// stop pushing forward, back straight off the wall, then pivot away from it
+// in place before letting normal centring resume.
+#define WALL_STUCK_MS           400
+#define WALL_RECOVERY_REV_PWM   100  // straight reverse, both wheels
+#define WALL_RECOVERY_REV_MS    250
+#define WALL_RECOVERY_PIVOT_PWM 90   // in-place pivot, away from the wall
+#define WALL_RECOVERY_PIVOT_MS  300
+
 // YAW GOVERNOR.
 // Hard ceiling on how fast the chassis may rotate while centring. Beyond
 // this the sonars are pointing far enough off-axis that their readings stop

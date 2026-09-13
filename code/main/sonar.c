@@ -160,10 +160,17 @@ void Sonar_Task(void) {
     // must never be filtered out as noise.
     p->confident = p->too_close ? 1 : (implausible_jump ? 0 : 1);
 
-    // Record a front-obstacle vote for this ping.
+    // Record a front-obstacle vote for this ping. A real obstacle gets
+    // CLOSER gradually as the robot advances; a step bigger than
+    // SONAR_MAX_JUMP_CM in one 60ms refresh is the front beam catching the
+    // side wall during a correction turn, not the corridor suddenly
+    // shrinking, so it must not vote "blocked" -- that gates it the same way
+    // implausible_jump already gates p->confident above. A too-close reading
+    // always votes regardless: it is a safety signal, not steering noise.
     if (s_turn == SONAR_FRONT) {
         uint8_t blocked = (p->too_close) ? 1
-                        : ((v != SONAR_NO_ECHO && v < FRONT_BLOCKED_CM) ? 1 : 0);
+                        : ((!implausible_jump && v != SONAR_NO_ECHO &&
+                            v < FRONT_BLOCKED_CM) ? 1 : 0);
         s_front_votes[s_front_vi] = blocked;
         s_front_vi = (uint8_t)((s_front_vi + 1) % FRONT_VOTE_WINDOW);
     }
