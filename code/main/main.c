@@ -25,6 +25,8 @@
 //        picks up the wrong wall
 //    5 = open-loop square drive test -- no sonar, no corridor: 4x (2s
 //        forward + 90 degree turn) to prove raw drive/turn capability
+//    6 = turn debugging -- repeats one pivot with a measuring pause after
+//        each, streaming the full yaw-rate profile. Nothing but the turn.
 // ---------------------------------------------------------------------------
 #define BUILD_MODE 3
 
@@ -48,6 +50,8 @@ static void report_reset_cause(void) {
 static void telemetry_header(void) {
 #if BUILD_MODE == 4
     Debug_Str("# hdg10,L,F,R,Lopen,Ropen,Ltoo,Rtoo,Fblocked,Fvotes");
+#elif BUILD_MODE == 2 || BUILD_MODE == 5 || BUILD_MODE == 6
+    Debug_Str("# no periodic CSV in this mode -- event and summary lines only");
 #else
     Debug_Str("# st,L,F,R,lok,rok,near,fv,md,br,err,wt,gt,corr,pwmL,pwmR,rock,rate,gx,gy,ovr,drop");
 #endif
@@ -200,6 +204,60 @@ int main(void) {
         }
 
         Debug_Str("SQUARE TEST DONE\r\n");
+        Motors_Stop();
+        for (;;) { }
+    }
+#elif BUILD_MODE == 6
+    {
+        uint8_t n;
+
+        Turn_SampleTrace(1);
+
+        Debug_Str("# TURN DEBUG  angle=");   Debug_Int(TURNDBG_ANGLE);
+        Debug_Str(" repeats=");              Debug_Int(TURNDBG_REPEATS);
+        Debug_Str(" alt=");                  Debug_Int(TURNDBG_ALTERNATE);
+        Debug_Str(" decim=");                Debug_Int(TURNDBG_SAMPLE_EVERY);
+        Debug_NL();
+        Debug_Str("# S,ms,rate,hdg10  <- per-sample stream (rate is raw LSB, "
+                  "65.5 per deg/sec)\r\n");
+        Debug_Str("# T <phase> hdg10=..    <- phase boundary\r\n");
+        Debug_Str("# SUM ..                <- per-turn summary\r\n");
+        Debug_Str("# tape a reference line on the floor, protractor each turn "
+                  "during the pause\r\n");
+        Timer_WaitMs(STARTUP_DELAY_MS);
+
+        for (n = 0; n < TURNDBG_REPEATS; n++) {
+            turn_result_t r;
+            turn_dir_t dir = (TURNDBG_ALTERNATE && (n & 1)) ? TURN_LEFT : TURN_RIGHT;
+
+            Debug_Str("=== turn ");
+            Debug_Int(n + 1);
+            Debug_Str((dir == TURN_RIGHT) ? " RIGHT ===\r\n" : " LEFT ===\r\n");
+
+            Turn_Execute(TURNDBG_ANGLE, dir, &r);
+
+            Debug_Str("SUM ");
+            Debug_KV("n",       n + 1);
+            Debug_KV("dirR",    (dir == TURN_RIGHT) ? 1 : 0);
+            Debug_KV("ang10",   r.achieved_tenths);
+            Debug_KV("err10",   r.initial_error_tenths);
+            Debug_KV("nudges",  r.nudges_used);
+            Debug_KV("peak",    r.peak_rate);
+            Debug_KV("coastms", r.coast_ms);
+            Debug_KV("wrong",   r.wrong_way);
+            Debug_KV("recal",   r.recal_ok);
+            Debug_KV("to",      r.timed_out);
+            // Cumulative since boot, so compare it turn to turn: any increase
+            // means the per-sample stream lost bytes during that turn and its
+            // S lines cannot be trusted -- raise TURNDBG_SAMPLE_EVERY.
+            Debug_KV("drop",    Debug_Dropped());
+            Debug_NL();
+
+            Debug_Str("measure the angle now\r\n");
+            Timer_WaitMs(TURNDBG_PAUSE_MS);
+        }
+
+        Debug_Str("TURN DEBUG DONE\r\n");
         Motors_Stop();
         for (;;) { }
     }

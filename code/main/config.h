@@ -419,6 +419,31 @@
 // for Mode 3 runs, where it would interleave with corridor telemetry.
 #define TURN_TRACE               1
 
+// Mode 6: dedicated turn debugging. Repeats a pivot with a pause after each
+// one so the physical angle can be measured and written down, and streams the
+// raw yaw rate through the whole turn so the angular-velocity profile can be
+// reconstructed offline -- that profile is what separates "the coast is longer
+// than TURN_SETTLE_MS" from "the gyro is clipping" from "the brake pulse does
+// nothing", which a single end-of-turn angle cannot.
+#define TURNDBG_ANGLE            90
+#define TURNDBG_REPEATS          6
+// Alternate R,L,R,L... Turn error that differs by direction means a motor or
+// tyre asymmetry, not a calibration error -- and it exercises the direction
+// sign check (turn_result_t.wrong_way) both ways.
+#define TURNDBG_ALTERNATE        1
+#define TURNDBG_PAUSE_MS         6000 // protractor the angle, write it down
+
+// Per-sample stream decimation. 1 = every TURN_TICK_MS (5ms) sample, which is
+// ~22 bytes per 5ms against a 3840 byte/s budget at 38400 baud -- over 100%,
+// so bytes WILL drop. 2 = every 10ms (~57%), which fits with headroom. Watch
+// the `drop` field in the per-turn summary: if it climbs, raise this.
+#define TURNDBG_SAMPLE_EVERY     2
+
+// |yaw rate| below this counts as "stopped" when measuring how long the
+// chassis actually coasts after the motors cut. Raw LSB; 65.5 LSB per deg/sec,
+// so 200 ~= 3 deg/sec.
+#define TURNDBG_STILL_LSB        200
+
 // ---------------------------------------------------------------------------
 //  16. DEBUG
 // ---------------------------------------------------------------------------

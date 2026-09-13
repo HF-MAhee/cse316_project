@@ -35,6 +35,15 @@ typedef struct {
     // turn while the robot visibly turns the right way, that convention is
     // inverted on your board, not the motors.
     uint8_t wrong_way;
+
+    // How long after the motors cut the chassis was STILL rotating faster
+    // than TURNDBG_STILL_LSB, measured during the phase-4 settle, in ms.
+    // If this lands at or near TURN_SETTLE_MS the settle is ending before the
+    // chassis has stopped, so the closed-loop correction below it is reading a
+    // heading that is still moving -- it nudges, coasts further, overshoots,
+    // reverses, and burns its whole nudge budget oscillating. Well under
+    // TURN_SETTLE_MS means the settle is long enough.
+    int32_t coast_ms;
 } turn_result_t;
 
 // Blocking closed-loop pivot. Sonar is meaningless while rotating, so the
@@ -43,4 +52,10 @@ void Turn_Execute(uint16_t degrees, turn_dir_t dir, turn_result_t *res);
 
 void Turn_90(turn_dir_t dir, turn_result_t *res);
 void Turn_180(turn_result_t *res);
+
+// Stream one line per gyro sample (decimated by TURNDBG_SAMPLE_EVERY) for the
+// duration of every subsequent turn: "S,<ms since turn start>,<raw rate>,
+// <hdg10>". Off by default -- only the turn-debug build mode switches it on,
+// so normal runs are unaffected.
+void Turn_SampleTrace(uint8_t on);
 #endif

@@ -12,6 +12,17 @@ static int32_t abs32(int32_t v) { return (v < 0) ? -v : v; }
 // Largest |yaw rate| seen in the current turn, raw LSB. Reset per turn.
 static int32_t s_peak_rate = 0;
 
+// Per-sample streaming (turn-debug mode only) and coast measurement state.
+static uint8_t  s_sample_trace = 0;   // Turn_SampleTrace()
+static uint8_t  s_decimate     = 0;
+static uint32_t s_turn_t0      = 0;   // millis() at the start of this turn
+static uint8_t  s_in_settle    = 0;   // inside settle_tracked()
+static uint32_t s_settle_t0    = 0;
+static int32_t  s_last_move_ms = 0;   // last time this settle saw real motion
+static int32_t  s_coast_ms     = 0;   // result of the most recent settle
+
+void Turn_SampleTrace(uint8_t on) { s_sample_trace = on; }
+
 #if TURN_TRACE
 static void turn_trace(const char *tag) {
     Debug_Str("  T ");
@@ -36,8 +47,28 @@ static void turn_sample(uint32_t *next_ms) {
     // Track the peak rate so gyro clipping is visible. Done in int32 because
     // negating INT16_MIN would overflow.
     r = Gyro_Rate(g.z);
+
+    if (s_sample_trace && ++s_decimate >= TURNDBG_SAMPLE_EVERY) {
+        s_decimate = 0;
+        Debug_Str("S,");
+        Debug_Int((int32_t)(millis() - s_turn_t0));
+        Debug_Str(",");
+        Debug_Int(r);
+        Debug_Str(",");
+        Debug_Int(Heading_DegreesTenths());
+        Debug_NL();
+    }
+
     if (r < 0) r = -r;
     if (r > s_peak_rate) s_peak_rate = r;
+
+    // Coast measurement: while the motors are off, remember the last moment
+    // the chassis was still genuinely rotating. That is the real coast time,
+    // which is what TURN_SETTLE_MS has to cover.
+    if (s_in_settle && r >= TURNDBG_STILL_LSB) {
+        s_last_move_ms = (int32_t)(millis() - s_settle_t0);
+    }
+
     *next_ms += TURN_TICK_MS;
 }
 
@@ -54,7 +85,12 @@ static void pulse_tracked(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_m
 static void settle_tracked(uint16_t ms, uint32_t *next_ms) {
     uint32_t t0 = millis();
     Motors_Stop();
+    s_in_settle    = 1;
+    s_settle_t0    = t0;
+    s_last_move_ms = 0;
     while ((millis() - t0) < ms) turn_sample(next_ms);
+    s_in_settle = 0;
+    s_coast_ms  = s_last_move_ms;
 }
 
 static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res) {
@@ -71,6 +107,8 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     res->timed_out   = 0;
     res->nudges_used = 0;
     s_peak_rate      = 0;
+    s_turn_t0        = millis();
+    s_decimate       = 0;
 
     // --- PHASE 1: kickstart, tracked -------------------------------------
     // A pivot skids the tyres sideways, so it needs more breakaway torque
@@ -94,6 +132,10 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     // --- PHASE 4: settle, still counting the coast -------------------------
     settle_tracked(TURN_SETTLE_MS, &next_ms);
     turn_trace("settle");
+    // Coast from the main sweep only -- later settles (after each nudge) would
+    // overwrite s_coast_ms, and it is this one that TURN_SETTLE_MS is sized
+    // against.
+    res->coast_ms = s_coast_ms;
 
     // Residual error from the fixed early-stop margin alone, before any
     // closed-loop nudging. Positive = undershot, negative = overshot -- see
@@ -188,6 +230,7 @@ void Turn_180(turn_result_t *res) {
     res->initial_error_tenths = a.initial_error_tenths + b.initial_error_tenths;
     res->peak_rate            = (a.peak_rate > b.peak_rate) ? a.peak_rate : b.peak_rate;
     res->wrong_way            = a.wrong_way | b.wrong_way;
+    res->coast_ms             = (a.coast_ms > b.coast_ms) ? a.coast_ms : b.coast_ms;
 #else
     Turn_Execute(180, TURN_RIGHT, res);
 #endif
