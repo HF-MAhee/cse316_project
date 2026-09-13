@@ -24,6 +24,9 @@ uint8_t  Sonar_IsOpen(sonar_id_t id);
 // 1 when the front is closer than FRONT_BLOCKED_CM.
 uint8_t  Sonar_FrontBlocked(void);
 
+// How many of the last FRONT_VOTE_WINDOW front pings saw an obstacle.
+uint8_t  Sonar_FrontVotes(void);
+
 // 1 when a wall is present but nearer than the sensor can measure. This is a
 // collision-imminent signal -- never confuse it with "no echo".
 uint8_t  Sonar_IsTooClose(sonar_id_t id);

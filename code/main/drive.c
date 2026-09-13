@@ -70,23 +70,33 @@ void Drive_Tick(int16_t gyro_rate) {
     // is too slow, and this must work even while the chassis is rocking --
     // a collision is exactly the moment sonar gets noisiest.
     if (l_near && !r_near) {
-        s_last_corr = WALL_MAX_CORRECTION;      // hard right, away from left wall
+        // Severity ramps with proximity instead of slamming to full
+        // differential at the threshold. A hard step at exactly 8cm was
+        // measured producing 71 deg/s of yaw, which bounced the robot off
+        // one wall straight into the other.
+        int16_t sev = (int16_t)WALL_EMERGENCY_CM - (int16_t)l_cm + 1;
+        if (sev < 1) sev = 1;
+        if (sev > WALL_EMERGENCY_CM) sev = WALL_EMERGENCY_CM;
+        s_last_corr = (int16_t)(((int32_t)WALL_MAX_CORRECTION * sev) / WALL_EMERGENCY_CM);
         s_dbg.branch = BRANCH_EMERG_L;
         s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0;
         s_dbg.corr = s_last_corr;
-        s_dbg.pwm_l = MOTOR_MIN_PWM + WALL_MAX_CORRECTION;
-        s_dbg.pwm_r = MOTOR_MIN_PWM;
+        s_dbg.pwm_l = (uint8_t)clamp16(DRIVE_BASE_PWM + s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        s_dbg.pwm_r = (uint8_t)clamp16(DRIVE_BASE_PWM - s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
         s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
         Motors_Forward(s_dbg.pwm_l, s_dbg.pwm_r);
         return;
     }
     if (r_near && !l_near) {
-        s_last_corr = -WALL_MAX_CORRECTION;     // hard left, away from right wall
+        int16_t sev = (int16_t)WALL_EMERGENCY_CM - (int16_t)r_cm + 1;
+        if (sev < 1) sev = 1;
+        if (sev > WALL_EMERGENCY_CM) sev = WALL_EMERGENCY_CM;
+        s_last_corr = -(int16_t)(((int32_t)WALL_MAX_CORRECTION * sev) / WALL_EMERGENCY_CM);
         s_dbg.branch = BRANCH_EMERG_R;
         s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0;
         s_dbg.corr = s_last_corr;
-        s_dbg.pwm_l = MOTOR_MIN_PWM;
-        s_dbg.pwm_r = MOTOR_MIN_PWM + WALL_MAX_CORRECTION;
+        s_dbg.pwm_l = (uint8_t)clamp16(DRIVE_BASE_PWM + s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        s_dbg.pwm_r = (uint8_t)clamp16(DRIVE_BASE_PWM - s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
         s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
         Motors_Forward(s_dbg.pwm_l, s_dbg.pwm_r);
         return;
@@ -129,6 +139,20 @@ void Drive_Tick(int16_t gyro_rate) {
 
     s_dbg.gyro_term = (int16_t)(((int32_t)WALL_KD_NUM * gyro_rate) / WALL_KD_DEN);
     corr += s_dbg.gyro_term;
+
+    // --- YAW GOVERNOR -----------------------------------------------------
+    // Stop ADDING rotation once the chassis is already turning fast in the
+    // direction we want to steer. Beyond roughly 20 deg/s the sonars are far
+    // enough off-axis that their readings no longer describe the corridor --
+    // and the front beam in particular walks off whatever lies ahead, which
+    // is how an obstacle at 50cm went undetected. This does not reverse the
+    // correction; it just refuses to wind it up further and lets the existing
+    // rotation carry the robot back toward centre.
+    // Sign convention: positive gyro_rate = turning LEFT, positive corr =
+    // steer RIGHT.
+    if (corr > 0 && gyro_rate < -YAW_GOVERNOR_LSB) corr = 0;
+    if (corr < 0 && gyro_rate >  YAW_GOVERNOR_LSB) corr = 0;
+
     corr  = clamp16(corr, -WALL_MAX_CORRECTION, WALL_MAX_CORRECTION);
 
     s_dbg.error_cm = error_cm;

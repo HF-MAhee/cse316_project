@@ -24,6 +24,13 @@ typedef struct {
 static sonar_t s[SONAR_COUNT];
 static uint8_t s_turn = 0;
 
+// Rolling record of whether each of the last FRONT_VOTE_WINDOW front pings
+// saw something inside FRONT_BLOCKED_CM. Used instead of "N consecutive"
+// because a yawing chassis swings the front beam off a real obstacle for
+// several pings at a time.
+static uint8_t s_front_votes[FRONT_VOTE_WINDOW];
+static uint8_t s_front_vi = 0;
+
 void Sonar_Init(void) {
     uint8_t i, k;
 
@@ -49,6 +56,8 @@ void Sonar_Init(void) {
         s[i].confident = 0;
         for (k = 0; k < HIST; k++) s[i].hist[k] = SONAR_NO_ECHO;
     }
+    for (i = 0; i < FRONT_VOTE_WINDOW; i++) s_front_votes[i] = 0;
+    s_front_vi = 0;
     s_turn = 0;
 }
 
@@ -151,6 +160,14 @@ void Sonar_Task(void) {
     // must never be filtered out as noise.
     p->confident = p->too_close ? 1 : (implausible_jump ? 0 : 1);
 
+    // Record a front-obstacle vote for this ping.
+    if (s_turn == SONAR_FRONT) {
+        uint8_t blocked = (p->too_close) ? 1
+                        : ((v != SONAR_NO_ECHO && v < FRONT_BLOCKED_CM) ? 1 : 0);
+        s_front_votes[s_front_vi] = blocked;
+        s_front_vi = (uint8_t)((s_front_vi + 1) % FRONT_VOTE_WINDOW);
+    }
+
     s_turn = (uint8_t)((s_turn + 1) % SONAR_COUNT);
 }
 
@@ -187,13 +204,28 @@ uint8_t Sonar_IsTooClose(sonar_id_t id) {
 }
 
 uint8_t Sonar_FrontBlocked(void) {
-    uint16_t v = Sonar_Latest(SONAR_FRONT);
-    if (v == SONAR_NO_ECHO) return 0;
-    return (v < FRONT_BLOCKED_CM) ? 1 : 0;
+    uint8_t i, votes = 0;
+    // An obstacle seen in ANY FRONT_VOTE_THRESHOLD of the last
+    // FRONT_VOTE_WINDOW pings counts as real. The old version tested only the
+    // single most recent ping, so a correction turn that walked the beam off
+    // target hid the obstacle completely -- the robot drove into a wall while
+    // the front sonar reported 51..65 cm of clear space.
+    for (i = 0; i < FRONT_VOTE_WINDOW; i++) votes = (uint8_t)(votes + s_front_votes[i]);
+    return (votes >= FRONT_VOTE_THRESHOLD) ? 1 : 0;
+}
+
+// Number of the last FRONT_VOTE_WINDOW pings that saw an obstacle. Exposed
+// for telemetry so a near-miss (1 vote) is visible before it becomes a stop.
+uint8_t Sonar_FrontVotes(void) {
+    uint8_t i, votes = 0;
+    for (i = 0; i < FRONT_VOTE_WINDOW; i++) votes = (uint8_t)(votes + s_front_votes[i]);
+    return votes;
 }
 
 void Sonar_Flush(void) {
     uint8_t i, k;
+    for (i = 0; i < FRONT_VOTE_WINDOW; i++) s_front_votes[i] = 0;
+    s_front_vi = 0;
     for (i = 0; i < SONAR_COUNT; i++) {
         s[i].hist_n = 0;
         s[i].hist_i = 0;
