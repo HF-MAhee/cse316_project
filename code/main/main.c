@@ -20,6 +20,11 @@
 //    1 = wall centring in a straight corridor
 //    2 = single turn accuracy test
 //    3 = full maze solver
+//    4 = sonar cone characterization -- motors OFF, rotate the chassis BY
+//        HAND and watch heading vs L/F/R to find the angle where a beam
+//        picks up the wrong wall
+//    5 = open-loop square drive test -- no sonar, no corridor: 4x (2s
+//        forward + 90 degree turn) to prove raw drive/turn capability
 // ---------------------------------------------------------------------------
 #define BUILD_MODE 3
 
@@ -41,10 +46,39 @@ static void report_reset_cause(void) {
 }
 
 static void telemetry_header(void) {
+#if BUILD_MODE == 4
+    Debug_Str("# hdg10,L,F,R,Lopen,Ropen,Ltoo,Rtoo,Fblocked,Fvotes");
+#else
     Debug_Str("# st,L,F,R,lok,rok,near,fv,md,br,err,wt,gt,corr,pwmL,pwmR,rock,rate,gx,gy,ovr,drop");
+#endif
     Debug_NL();
 }
 
+#if BUILD_MODE == 4
+// Mode 4 telemetry: heading (tenths of a degree, accumulated since boot) and
+// RAW (not median-filtered) L/F/R so a single bad ping from a beam edge is
+// visible rather than smoothed away -- the whole point here is finding
+// exactly where the cone edges are, not steering on clean data.
+static void telemetry_sonar_test(void) {
+    static uint32_t last = 0;
+    if ((millis() - last) < SONAR_TEST_INTERVAL_MS) return;
+    last = millis();
+
+    Debug_CSV(Heading_DegreesTenths());
+    Debug_CSV(Sonar_Latest(SONAR_LEFT));
+    Debug_CSV(Sonar_Latest(SONAR_FRONT));
+    Debug_CSV(Sonar_Latest(SONAR_RIGHT));
+    Debug_CSV(Sonar_IsOpen(SONAR_LEFT));
+    Debug_CSV(Sonar_IsOpen(SONAR_RIGHT));
+    Debug_CSV(Sonar_IsTooClose(SONAR_LEFT));
+    Debug_CSV(Sonar_IsTooClose(SONAR_RIGHT));
+    Debug_CSV(Sonar_FrontBlocked());
+    Debug_Int(Sonar_FrontVotes());
+    Debug_NL();
+}
+#endif
+
+#if BUILD_MODE != 4
 static void telemetry(int16_t gyro_rate, int16_t gx, int16_t gy, uint16_t overruns) {
     static uint32_t last = 0;
     const drive_debug_t *d;
@@ -82,6 +116,7 @@ static void telemetry(int16_t gyro_rate, int16_t gx, int16_t gy, uint16_t overru
     (void)gyro_rate; (void)gx; (void)gy; (void)overruns; (void)d;
 #endif
 }
+#endif // BUILD_MODE != 4
 
 int main(void) {
     uint32_t next_tick;
@@ -128,6 +163,39 @@ int main(void) {
         Motors_Stop();
         for (;;) { }
     }
+#elif BUILD_MODE == 5
+    {
+        uint8_t leg;
+        Timer_WaitMs(STARTUP_DELAY_MS);
+        Debug_Str("SQUARE TEST: ");
+        Debug_Int(SQUARE_SIDES);
+        Debug_Str(" sides, forward + right turn each\r\n");
+
+        for (leg = 0; leg < SQUARE_SIDES; leg++) {
+            turn_result_t r;
+
+            Debug_Str("leg "); Debug_Int(leg + 1); Debug_Str(" forward\r\n");
+            // Breakaway kick, same idea as Drive_Begin(): the motors will not
+            // start moving from rest at cruise PWM alone.
+            Motors_Forward(KICK_PWM, KICK_PWM);
+            Timer_WaitMs(KICK_MS);
+            Motors_Forward(SQUARE_TEST_PWM, SQUARE_TEST_PWM);
+            Timer_WaitMs(SQUARE_LEG_MS - KICK_MS);
+            Motors_Stop();
+            Timer_WaitMs(SQUARE_TURN_SETTLE_MS);
+
+            Debug_Str("leg "); Debug_Int(leg + 1); Debug_Str(" turn\r\n");
+            Turn_90(TURN_RIGHT, &r);
+            Debug_KV("ang10", r.achieved_tenths);
+            Debug_KV("err10", r.initial_error_tenths);
+            Debug_KV("nudges", r.nudges_used);
+            Debug_NL();
+        }
+
+        Debug_Str("SQUARE TEST DONE\r\n");
+        Motors_Stop();
+        for (;;) { }
+    }
 #endif
 
     for (;;) {
@@ -155,7 +223,10 @@ int main(void) {
         Sonar_Task();                          // exactly one ping per tick
 
         // ---- behaviour ---------------------------------------------------
-#if BUILD_MODE == 0
+#if BUILD_MODE == 0 || BUILD_MODE == 4
+        // Mode 4: motors permanently off. Sonar/heading above still run every
+        // tick, so rotating the chassis by hand is exactly what the cone test
+        // needs -- only the telemetry format differs (see below).
         Motors_Stop();
         (void)rate;
 #elif BUILD_MODE == 1
@@ -199,7 +270,11 @@ int main(void) {
             if (overruns < 0xFFFF) overruns++;
         }
 
+#if BUILD_MODE == 4
+        telemetry_sonar_test();
+#else
         telemetry(rate, g.x, g.y, overruns);
+#endif
 
         // ---- global safety ----------------------------------------------
         if ((millis() - run_start) > MAX_RUN_MS) {

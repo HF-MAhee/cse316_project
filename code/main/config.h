@@ -389,7 +389,30 @@
 #define STARTUP_DELAY_MS       3000
 
 // ---------------------------------------------------------------------------
-//  15. DEBUG
+//  15. DIAGNOSTIC BUILD MODES
+// ---------------------------------------------------------------------------
+// Mode 4: sonar cone characterization. Motors stay off; place the robot mid-
+// corridor and rotate it BY HAND while watching heading vs L/F/R to see
+// exactly what angle makes a beam pick up the wrong wall. Faster than
+// TELEMETRY_INTERVAL_MS -- this is a live, watch-it-happen test, not a logged
+// run, so finer time resolution on a slow hand rotation is worth more than
+// keeping the byte budget small.
+#define SONAR_TEST_INTERVAL_MS   50
+
+// Mode 5: open-loop square. No sonar, no wall centring, no corridor -- pure
+// forward-drive and turn-accuracy test. Four legs of SQUARE_LEG_MS forward at
+// SQUARE_TEST_PWM, each followed by a 90 degree turn, should return the robot
+// to its start point facing its start heading.
+#define SQUARE_TEST_PWM          60   // requested: keep base speed at 60
+#define SQUARE_LEG_MS            2000 // forward time per side, kick included
+#define SQUARE_TURN_SETTLE_MS    200  // let the chassis stop coasting before
+                                       // the turn's own kick fires -- same gap
+                                       // TURN_180_AS_TWO_90S uses between its
+                                       // two 90s
+#define SQUARE_SIDES             4
+
+// ---------------------------------------------------------------------------
+//  16. DEBUG
 // ---------------------------------------------------------------------------
 #define DEBUG_ENABLED          1
 
