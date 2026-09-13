@@ -69,15 +69,35 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     // --- PHASE 4: settle, still counting the coast -------------------------
     settle_tracked(TURN_SETTLE_MS, &next_ms);
 
+    // Residual error from the fixed early-stop margin alone, before any
+    // closed-loop nudging. Positive = undershot, negative = overshot -- see
+    // turn.h. This is the number that tells you whether TURN_STOP_MARGIN_DEG
+    // is guessing the coast right, not just that *some* correction happened.
+    res->initial_error_tenths =
+        ((target - abs32(Heading_Raw())) * 10L) / GYRO_LSB_MS_PER_DEGREE;
+
     // --- PHASE 5: closed-loop correction ----------------------------------
     // The chassis is stopped and the accumulator now holds the true angle.
-    // Nudge in whichever direction shrinks the error, then re-measure.
+    // Nudge in whichever direction shrinks the error (cw if undershot, the
+    // reverse if overshot), then re-measure. The nudge LENGTH scales with
+    // the remaining error instead of firing the same fixed pulse regardless
+    // of size -- a fixed pulse either crawls toward a large gap or blows
+    // through a tiny one by the same amount, which oscillates instead of
+    // converging.
     for (i = 0; i < TURN_MAX_NUDGES; i++) {
         int32_t err = target - abs32(Heading_Raw());
+        int32_t err_deg_tenths;
+        uint16_t nudge_ms;
+
         if (abs32(err) <= deadband) break;
         if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
 
-        pulse_tracked((err > 0) ? cw : !cw, TURN_NUDGE_PWM, TURN_NUDGE_MS, &next_ms);
+        err_deg_tenths = (abs32(err) * 10L) / GYRO_LSB_MS_PER_DEGREE;
+        nudge_ms = (uint16_t)((err_deg_tenths * TURN_NUDGE_MS_PER_DEG) / 10L);
+        if (nudge_ms < TURN_NUDGE_MS_MIN) nudge_ms = TURN_NUDGE_MS_MIN;
+        if (nudge_ms > TURN_NUDGE_MS_MAX) nudge_ms = TURN_NUDGE_MS_MAX;
+
+        pulse_tracked((err > 0) ? cw : !cw, TURN_NUDGE_PWM, nudge_ms, &next_ms);
         settle_tracked(TURN_SETTLE_MS, &next_ms);
         res->nudges_used++;
     }
@@ -113,10 +133,11 @@ void Turn_180(turn_result_t *res) {
     Turn_Execute(90, TURN_RIGHT, &a);
     Timer_WaitMs(200);
     Turn_Execute(90, TURN_RIGHT, &b);
-    res->achieved_tenths = a.achieved_tenths + b.achieved_tenths;
-    res->nudges_used     = (uint8_t)(a.nudges_used + b.nudges_used);
-    res->timed_out       = a.timed_out | b.timed_out;
-    res->recal_ok        = b.recal_ok;
+    res->achieved_tenths      = a.achieved_tenths + b.achieved_tenths;
+    res->nudges_used          = (uint8_t)(a.nudges_used + b.nudges_used);
+    res->timed_out            = a.timed_out | b.timed_out;
+    res->recal_ok             = b.recal_ok;
+    res->initial_error_tenths = a.initial_error_tenths + b.initial_error_tenths;
 #else
     Turn_Execute(180, TURN_RIGHT, res);
 #endif

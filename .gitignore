@@ -10,3 +10,9 @@
 *.fdb_latexmk
 .DS_Store
 .vscode
+
+# Local Claude Code skills tooling (npx skills add ...) -- not part of the
+# firmware project, kept out of history intentionally.
+.agents/
+.claude/
+skills-lock.json

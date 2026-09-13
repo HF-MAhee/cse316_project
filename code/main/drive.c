@@ -4,11 +4,18 @@
 #include "sonar.h"
 #include "heading.h"
 #include "timer.h"
+#include "debug.h"
 
 static center_mode_t s_mode = CENTER_GYRO_ONLY;
 static int16_t       s_last_corr = 0;
 static int32_t       s_hold_heading = 0;
 static drive_debug_t s_dbg;
+
+// Wall-stuck recovery state. See WALL_STUCK_MS in config.h.
+static uint8_t  s_emerg_side    = 0; // 0 none, 1 left-near, 2 right-near
+static uint32_t s_emerg_since   = 0; // millis() the current side went near
+static uint8_t  s_recover_phase = 0; // 0 none, 1 reversing, 2 pivoting away
+static uint32_t s_recover_until = 0; // millis() deadline for current phase
 
 const drive_debug_t *Drive_Debug(void) { return &s_dbg; }
 
@@ -16,6 +23,10 @@ void Drive_Begin(void) {
     s_last_corr = 0;
     s_mode = CENTER_GYRO_ONLY;
     s_hold_heading = 0;
+    s_emerg_side    = 0;
+    s_emerg_since   = 0;
+    s_recover_phase = 0;
+    s_recover_until = 0;
     Heading_Reset();
 
     // Breakaway kick: the motors will not start from rest at cruise PWM.
@@ -65,32 +76,138 @@ void Drive_Tick(int16_t gyro_rate) {
     int16_t error_cm = 0;
     int16_t corr;
 
+    // --- ACTIVE RECOVERY --------------------------------------------------
+    // Mid-escape from a wall the ramped steer-away could not break contact
+    // with (see below). Keep re-issuing the current phase's motor command
+    // until its deadline, then advance. Non-blocking, same tick cadence as
+    // everything else -- sonar/gyro/telemetry keep running underneath it,
+    // unlike a blocking maneuver which would stall the control loop.
+    if (s_recover_phase != 0) {
+        s_dbg.branch = BRANCH_EMERG_RECOVER;
+        s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0; s_dbg.corr = 0;
+        s_dbg.pwm_l = 0; s_dbg.pwm_r = 0;
+        s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
+
+        if ((int32_t)(millis() - s_recover_until) < 0) return; // motors already set, wait
+
+        if (s_recover_phase == 1) {
+            // Reverse pulse done -- pivot away from whichever wall trapped us.
+            // Away from LEFT = turn right (Motors_Pivot clockwise), away from
+            // RIGHT = turn left, matching the same sign convention the normal
+            // one-sided emergency below already uses.
+            uint8_t cw = (s_emerg_side == 1) ? 1 : 0;
+            Motors_Pivot(cw, WALL_RECOVERY_PIVOT_PWM);
+            s_recover_phase = 2;
+            s_recover_until = millis() + WALL_RECOVERY_PIVOT_MS;
+            Debug_Str("  -> clear of wall, pivoting away\r\n");
+            return;
+        }
+
+        // Recovery complete. Sonar history was taken while pointing somewhere
+        // else entirely (backing up, then pivoting) -- throw it away, same as
+        // after a turn, and let normal centring re-evaluate fresh next tick.
+        Motors_Stop();
+        Sonar_Flush();
+        s_recover_phase = 0;
+        s_recover_until = 0;
+        s_emerg_side    = 0;
+        s_emerg_since   = 0;
+        Debug_Str("  -> recovered, resuming normal driving\r\n");
+        return;
+    }
+
     // --- EMERGENCY: wall closer than the controller can gracefully handle ---
     // Checked first and unconditionally. At this range the proportional term
     // is too slow, and this must work even while the chassis is rocking --
     // a collision is exactly the moment sonar gets noisiest.
     if (l_near && !r_near) {
-        s_last_corr = WALL_MAX_CORRECTION;      // hard right, away from left wall
+        if (s_emerg_side != 1) {
+            s_emerg_side = 1;
+            s_emerg_since = millis();
+            Debug_Str("COLLISION COURSE: left wall too close, steering right\r\n");
+        }
+
+        // The ramped steer-away below still drives BOTH wheels forward -- it
+        // only varies the split. If a chassis corner is physically caught on
+        // the wall, that forward-biased differential cannot rotate the robot
+        // away: it grinds along the wall at an angle instead of turning off
+        // it (observed on hardware). Give it WALL_STUCK_MS to work; past that,
+        // stop pushing forward and back off instead.
+        if ((millis() - s_emerg_since) > WALL_STUCK_MS) {
+            Motors_SetLeft(DIR_REV,  WALL_RECOVERY_REV_PWM);
+            Motors_SetRight(DIR_REV, WALL_RECOVERY_REV_PWM);
+            s_recover_phase = 1;
+            s_recover_until = millis() + WALL_RECOVERY_REV_MS;
+            s_dbg.branch = BRANCH_EMERG_RECOVER;
+            s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0; s_dbg.corr = 0;
+            s_dbg.pwm_l = 0; s_dbg.pwm_r = 0;
+            s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
+            Debug_Str("STUCK on left wall, steering alone didn't clear it -- reversing off\r\n");
+            return;
+        }
+
+        // Severity ramps with proximity instead of slamming to full
+        // differential at the threshold. A hard step at exactly 8cm was
+        // measured producing 71 deg/s of yaw, which bounced the robot off
+        // one wall straight into the other.
+        {
+            int16_t sev = (int16_t)WALL_EMERGENCY_CM - (int16_t)l_cm + 1;
+            if (sev < 1) sev = 1;
+            if (sev > WALL_EMERGENCY_CM) sev = WALL_EMERGENCY_CM;
+            s_last_corr = (int16_t)(((int32_t)WALL_MAX_CORRECTION * sev) / WALL_EMERGENCY_CM);
+        }
         s_dbg.branch = BRANCH_EMERG_L;
         s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0;
         s_dbg.corr = s_last_corr;
-        s_dbg.pwm_l = MOTOR_MIN_PWM + WALL_MAX_CORRECTION;
-        s_dbg.pwm_r = MOTOR_MIN_PWM;
+        s_dbg.pwm_l = (uint8_t)clamp16(DRIVE_BASE_PWM + s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        s_dbg.pwm_r = (uint8_t)clamp16(DRIVE_BASE_PWM - s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
         s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
         Motors_Forward(s_dbg.pwm_l, s_dbg.pwm_r);
         return;
     }
     if (r_near && !l_near) {
-        s_last_corr = -WALL_MAX_CORRECTION;     // hard left, away from right wall
+        if (s_emerg_side != 2) {
+            s_emerg_side = 2;
+            s_emerg_since = millis();
+            Debug_Str("COLLISION COURSE: right wall too close, steering left\r\n");
+        }
+
+        if ((millis() - s_emerg_since) > WALL_STUCK_MS) {
+            Motors_SetLeft(DIR_REV,  WALL_RECOVERY_REV_PWM);
+            Motors_SetRight(DIR_REV, WALL_RECOVERY_REV_PWM);
+            s_recover_phase = 1;
+            s_recover_until = millis() + WALL_RECOVERY_REV_MS;
+            s_dbg.branch = BRANCH_EMERG_RECOVER;
+            s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0; s_dbg.corr = 0;
+            s_dbg.pwm_l = 0; s_dbg.pwm_r = 0;
+            s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
+            Debug_Str("STUCK on right wall, steering alone didn't clear it -- reversing off\r\n");
+            return;
+        }
+
+        {
+            int16_t sev = (int16_t)WALL_EMERGENCY_CM - (int16_t)r_cm + 1;
+            if (sev < 1) sev = 1;
+            if (sev > WALL_EMERGENCY_CM) sev = WALL_EMERGENCY_CM;
+            s_last_corr = -(int16_t)(((int32_t)WALL_MAX_CORRECTION * sev) / WALL_EMERGENCY_CM);
+        }
         s_dbg.branch = BRANCH_EMERG_R;
         s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0;
         s_dbg.corr = s_last_corr;
-        s_dbg.pwm_l = MOTOR_MIN_PWM;
-        s_dbg.pwm_r = MOTOR_MIN_PWM + WALL_MAX_CORRECTION;
+        s_dbg.pwm_l = (uint8_t)clamp16(DRIVE_BASE_PWM + s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        s_dbg.pwm_r = (uint8_t)clamp16(DRIVE_BASE_PWM - s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
         s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
         Motors_Forward(s_dbg.pwm_l, s_dbg.pwm_r);
         return;
     }
+
+    // Neither side is in emergency this tick -- clear the stuck timer so a
+    // fresh contact later gets its own full WALL_STUCK_MS grace period.
+    if (s_emerg_side != 0) {
+        Debug_Str("clear of wall, resuming normal centring\r\n");
+    }
+    s_emerg_side  = 0;
+    s_emerg_since = 0;
 
     // --- Mode selection ---------------------------------------------------
     if (l_ok && r_ok) {
@@ -129,6 +246,20 @@ void Drive_Tick(int16_t gyro_rate) {
 
     s_dbg.gyro_term = (int16_t)(((int32_t)WALL_KD_NUM * gyro_rate) / WALL_KD_DEN);
     corr += s_dbg.gyro_term;
+
+    // --- YAW GOVERNOR -----------------------------------------------------
+    // Stop ADDING rotation once the chassis is already turning fast in the
+    // direction we want to steer. Beyond roughly 20 deg/s the sonars are far
+    // enough off-axis that their readings no longer describe the corridor --
+    // and the front beam in particular walks off whatever lies ahead, which
+    // is how an obstacle at 50cm went undetected. This does not reverse the
+    // correction; it just refuses to wind it up further and lets the existing
+    // rotation carry the robot back toward centre.
+    // Sign convention: positive gyro_rate = turning LEFT, positive corr =
+    // steer RIGHT.
+    if (corr > 0 && gyro_rate < -YAW_GOVERNOR_LSB) corr = 0;
+    if (corr < 0 && gyro_rate >  YAW_GOVERNOR_LSB) corr = 0;
+
     corr  = clamp16(corr, -WALL_MAX_CORRECTION, WALL_MAX_CORRECTION);
 
     s_dbg.error_cm = error_cm;

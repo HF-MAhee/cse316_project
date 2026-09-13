@@ -21,7 +21,7 @@
 //    2 = single turn accuracy test
 //    3 = full maze solver
 // ---------------------------------------------------------------------------
-#define BUILD_MODE 1
+#define BUILD_MODE 3
 
 // Decodes MCUCSR at boot. This is the definitive answer to "did it reset, and
 // why" -- guesswork from log gaps is not needed once this prints. BORF set
@@ -41,7 +41,7 @@ static void report_reset_cause(void) {
 }
 
 static void telemetry_header(void) {
-    Debug_Str("# st,L,F,R,lok,rok,near,md,br,err,wt,gt,corr,pwmL,pwmR,rock,rate,gx,gy,ovr,drop");
+    Debug_Str("# st,L,F,R,lok,rok,near,fv,md,br,err,wt,gt,corr,pwmL,pwmR,rock,rate,gx,gy,ovr,drop");
     Debug_NL();
 }
 
@@ -62,6 +62,7 @@ static void telemetry(int16_t gyro_rate, int16_t gx, int16_t gy, uint16_t overru
     // one field for both too-close flags: 0 none, 1 left, 2 right, 3 both
     Debug_CSV((Sonar_IsTooClose(SONAR_LEFT) ? 1 : 0) |
               (Sonar_IsTooClose(SONAR_RIGHT) ? 2 : 0));
+    Debug_CSV(Sonar_FrontVotes());
     Debug_CSV((int32_t)Drive_Mode());
     Debug_CSV(d->branch);
     Debug_CSV(d->error_cm);
@@ -117,6 +118,11 @@ int main(void) {
         Turn_90(TURN_RIGHT, &r);
         Debug_Str("turn test ");
         Debug_KV("ang10", r.achieved_tenths);
+        // err10 > 0: the fixed early-stop + coast undershot this run, needed
+        // more rotation. err10 < 0: it overshot, needed a reverse nudge.
+        // Consistently one sign across repeated runs -> retune
+        // TURN_STOP_MARGIN_DEG in that direction.
+        Debug_KV("err10", r.initial_error_tenths);
         Debug_KV("nudges", r.nudges_used);
         Debug_NL();
         Motors_Stop();

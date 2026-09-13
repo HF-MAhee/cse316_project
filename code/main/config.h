@@ -69,7 +69,7 @@
 // overshoot or approach-timing error. Verify this physically (Mode 2, watch
 // the corners during the pivot) before trusting it unsupervised. If it
 // clips, the fix is a wider corridor, not a software change.
-#define CORRIDOR_WIDTH_CM      40   // wall face to wall face
+#define CORRIDOR_WIDTH_CM      30   // wall face to wall face
 #define CORRIDOR_HALF_CM       (CORRIDOR_WIDTH_CM / 2)
 
 // ---------------------------------------------------------------------------
@@ -157,14 +157,21 @@
 // ---------------------------------------------------------------------------
 // Your chassis will not start moving below this. Every commanded speed is
 // clamped up to it (or to exactly 0 for a full stop).
-#define MOTOR_MIN_PWM          40
+// Measured on the actual chassis. MOTOR_MIN_PWM is below the stall floor of
+// ~60 on purpose: in a differential turn the slow wheel briefly dropping
+// under its own stall point makes it act as a pivot, which tightens the
+// correction. Both wheels are never commanded this low at once.
+#define MOTOR_MIN_PWM          45
 #define MOTOR_MAX_PWM          140
 
-// Straight-line cruise speed.
+// Straight-line cruise speed. Lowered from 75: at the higher speed the robot
+// covered too much ground during each correction and swerved close to the
+// walls. Slower means the same angular correction translates into less
+// lateral overshoot.
 #define DRIVE_BASE_PWM         60
 
 // Breakaway kick to overcome static friction on start.
-#define KICK_PWM               140  // you lowered this from 160 to protect a
+#define KICK_PWM               120  // you lowered this from 160 to protect a
                                     // connector; keep whatever works
 #define KICK_MS                40
 
@@ -182,16 +189,58 @@
 
 // Gyro damping. Positive gyro Z = turning LEFT (matches your original
 // straight-line code, where a positive accumulator slowed the right wheel).
+//
+// Raised from /120 to /65. At /120 the damping was far too weak to oppose
+// the proportional term: measured logs show wt=+19 against gt=-10 at
+// -17.8 deg/s, so the controller kept commanding MORE right-turn while
+// already turning right hard. The result was a runaway correction turn that
+// swung the front sonar off an obstacle. At /65 the two terms balance near
+// 18 deg/s, so the correction self-limits instead of winding up.
 #define WALL_KD_NUM            1
-#define WALL_KD_DEN            120
+#define WALL_KD_DEN            65
+
+// The correction is a DIFFERENTIAL about DRIVE_BASE_PWM, so its steering
+// authority is the ratio corr/base, not its absolute value. Lowering the
+// base speed without lowering this makes steering MORE violent, not less.
+// At base 60 a +-35 differential is a 58% split; 37% keeps it proportionate
+// to what +-35 gave at the original base of 75.
+#define WALL_MAX_CORRECTION_RATIO_PCT  37
 
 // Never let the differential exceed this, or a bad reading can spin the robot.
-#define WALL_MAX_CORRECTION    35
+// Derived from DRIVE_BASE_PWM so lowering the base speed automatically
+// softens the steering instead of sharpening it.
+#define WALL_MAX_CORRECTION    ((DRIVE_BASE_PWM * WALL_MAX_CORRECTION_RATIO_PCT) / 100)
 
-// Emergency avoidance: inside this distance the normal proportional
-// correction is too slow -- a wall this close needs maximum steer-away
-// immediately, regardless of what the other side reads.
+// Emergency avoidance: inside this distance the proportional correction is
+// too slow. Severity now RAMPS with proximity rather than slamming to full
+// differential at the threshold -- measured logs show a hard +-35 step at
+// exactly 8cm produced 71 deg/s of yaw and bounced the robot from one wall
+// straight into the other.
 #define WALL_EMERGENCY_CM      8
+
+// WALL-STUCK RECOVERY.
+// The ramped emergency steer above still drives BOTH wheels forward -- it
+// only varies the split. If a chassis corner physically catches the wall
+// (friction pins it), that forward-biased differential cannot rotate the
+// robot away: it just grinds along the wall at an angle instead of turning
+// off it. Observed on hardware. If a one-sided emergency stays active this
+// long without clearing, stop assuming steering alone will break contact:
+// stop pushing forward, back straight off the wall, then pivot away from it
+// in place before letting normal centring resume.
+#define WALL_STUCK_MS           400
+#define WALL_RECOVERY_REV_PWM   100  // straight reverse, both wheels
+#define WALL_RECOVERY_REV_MS    250
+#define WALL_RECOVERY_PIVOT_PWM 90   // in-place pivot, away from the wall
+#define WALL_RECOVERY_PIVOT_MS  300
+
+// YAW GOVERNOR.
+// Hard ceiling on how fast the chassis may rotate while centring. Beyond
+// this the sonars are pointing far enough off-axis that their readings stop
+// describing the corridor -- the front beam in particular walks off whatever
+// is ahead. Once exceeded, the controller stops ADDING yaw in that direction
+// (it does not reverse; it just stops winding up) and lets the rotation
+// decay. Units: raw LSB; 65.5 LSB per deg/sec. 1300 ~= 20 deg/sec.
+#define YAW_GOVERNOR_LSB       1300
 
 // ---------------------------------------------------------------------------
 //  9. JUNCTION / OPENING DETECTION
@@ -214,10 +263,23 @@
 // Higher than OPENING_CONFIRM: a spurious U-turn is expensive.
 #define DEADEND_CONFIRM        3
 
-// Consecutive confirmations before a plain front-obstacle stop (distinct
-// from junction classification -- used by BUILD_MODE 1's test harness so a
-// single bad ping can't halt a straight-line centering test early).
-#define FRONT_STOP_CONFIRM     2
+// Front-obstacle detection uses VOTING over a window, not consecutive hits.
+//
+// Why: the front sonar is rigidly mounted, so whenever the chassis yaws to
+// correct its position the beam swings off-axis. A real obstacle straight
+// ahead can then be missed for several consecutive pings -- measured logs
+// show F reading 51,60,57,65,65 (INCREASING) while driving into an obstacle
+// at ~50cm, because a sustained ~18 deg/s correction turn walked the beam
+// off the target. A "2 consecutive" rule can never fire in that situation.
+//
+// Voting fixes it: an obstacle that shows up in ANY 2 of the last 5 pings is
+// treated as real. Obstacles do not vanish; intermittent detection during a
+// yaw is expected, so intermittent evidence must be enough.
+#define FRONT_VOTE_WINDOW      5
+#define FRONT_VOTE_THRESHOLD   2
+
+// Kept for the Mode 1 harness; the voting above is what actually decides.
+#define FRONT_STOP_CONFIRM     1
 
 // ---------------------------------------------------------------------------
 //  10. APPROACH OFFSET  (front-mounted sonar compensation)
@@ -254,7 +316,21 @@
 #define TURN_STOP_MARGIN_DEG   4    // cut the main sweep this early
 #define TURN_DEADBAND_DEG      2    // "close enough"
 #define TURN_NUDGE_PWM         140
-#define TURN_NUDGE_MS          22
+
+// Nudge duration SCALES with the remaining error instead of firing the same
+// fixed-length pulse regardless of how far off the turn is. A fixed pulse
+// either wastes correction attempts creeping toward a large residual error,
+// or overcorrects a 1 degree residual by the same amount used for a 6 degree
+// one -- which is how a "converging" turn ends up oscillating around the
+// target instead of settling into TURN_DEADBAND_DEG.
+// ms = clamp(error_deg * TURN_NUDGE_MS_PER_DEG, MIN, MAX). Tune
+// TURN_NUDGE_MS_PER_DEG by watching `err10`/nudge count in Mode 2 telemetry:
+// still 2+ nudges of the same sign in a row -> raise it; nudges routinely
+// overshoot the deadband the other way -> lower it.
+#define TURN_NUDGE_MS_MIN      8
+#define TURN_NUDGE_MS_MAX      40
+#define TURN_NUDGE_MS_PER_DEG  6    // ms per whole degree of residual error
+
 #define TURN_MAX_NUDGES        5
 #define TURN_TIMEOUT_MS        7000 // safety: abort a turn that never finishes
 
