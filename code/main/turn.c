@@ -5,18 +5,39 @@
 #include "heading.h"
 #include "timer.h"
 #include "sonar.h"
+#include "debug.h"
 
 static int32_t abs32(int32_t v) { return (v < 0) ? -v : v; }
+
+// Largest |yaw rate| seen in the current turn, raw LSB. Reset per turn.
+static int32_t s_peak_rate = 0;
+
+#if TURN_TRACE
+static void turn_trace(const char *tag) {
+    Debug_Str("  T ");
+    Debug_Str(tag);
+    Debug_KV(" hdg10", Heading_DegreesTenths());
+    Debug_NL();
+}
+#else
+#define turn_trace(tag) ((void)0)
+#endif
 
 // One gyro sample on an exact TURN_TICK_MS schedule. Because Heading_Add()
 // carries dt explicitly, this loop's rate is independent of the main control
 // loop's rate -- both feed the same accumulator in the same units.
 static void turn_sample(uint32_t *next_ms) {
     gyro_xyz_t g;
+    int32_t r;
     while ((int32_t)(millis() - *next_ms) < 0) { /* wait for the slot */ }
     MPU6050_ReadAll(&g);
     Heading_Add(g.z, TURN_TICK_MS);
     Motion_Update(&g);
+    // Track the peak rate so gyro clipping is visible. Done in int32 because
+    // negating INT16_MIN would overflow.
+    r = Gyro_Rate(g.z);
+    if (r < 0) r = -r;
+    if (r > s_peak_rate) s_peak_rate = r;
     *next_ms += TURN_TICK_MS;
 }
 
@@ -49,12 +70,14 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     Heading_Reset();
     res->timed_out   = 0;
     res->nudges_used = 0;
+    s_peak_rate      = 0;
 
     // --- PHASE 1: kickstart, tracked -------------------------------------
     // A pivot skids the tyres sideways, so it needs more breakaway torque
     // than rolling straight. Counted, because with the wheels turning in
     // opposite directions this kick is real rotation.
     pulse_tracked(cw, TURN_KICK_PWM, TURN_KICK_MS, &next_ms);
+    turn_trace("kick");
 
     // --- PHASE 2: slow sweep, stopping early on purpose -------------------
     Motors_Pivot(cw, TURN_PWM);
@@ -62,12 +85,15 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
         if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
         turn_sample(&next_ms);
     }
+    turn_trace("sweep");
 
     // --- PHASE 3: active brake, tracked -----------------------------------
     pulse_tracked(!cw, TURN_BRAKE_PWM, TURN_BRAKE_MS, &next_ms);
+    turn_trace("brake");
 
     // --- PHASE 4: settle, still counting the coast -------------------------
     settle_tracked(TURN_SETTLE_MS, &next_ms);
+    turn_trace("settle");
 
     // Residual error from the fixed early-stop margin alone, before any
     // closed-loop nudging. Positive = undershot, negative = overshot -- see
@@ -100,10 +126,32 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
         pulse_tracked((err > 0) ? cw : !cw, TURN_NUDGE_PWM, nudge_ms, &next_ms);
         settle_tracked(TURN_SETTLE_MS, &next_ms);
         res->nudges_used++;
+
+#if TURN_TRACE
+        // Which way this nudge pushed and how long, then where it landed.
+        // Nudges alternating sign run after run means the settle is ending
+        // before the chassis has actually stopped coasting.
+        Debug_Str("  T nudge");
+        Debug_Int(res->nudges_used);
+        Debug_Str((err > 0) ? " fwd " : " rev ");
+        Debug_KV("ms", (int32_t)nudge_ms);
+        Debug_KV("hdg10", Heading_DegreesTenths());
+        Debug_NL();
+#endif
     }
 
     Motors_Stop();
     res->achieved_tenths = abs32(Heading_DegreesTenths());
+    res->peak_rate       = s_peak_rate;
+
+    // Direction check. Convention: positive gyro Z = turning LEFT, so a right
+    // turn must accumulate negative. Everything above works on |heading|, so
+    // without this a turn that went the wrong way reports a clean success.
+    {
+        int32_t signed_hdg = Heading_Raw();
+        if (dir == TURN_RIGHT) res->wrong_way = (signed_hdg > 0) ? 1 : 0;
+        else                   res->wrong_way = (signed_hdg < 0) ? 1 : 0;
+    }
 }
 
 void Turn_Execute(uint16_t degrees, turn_dir_t dir, turn_result_t *res) {
@@ -138,6 +186,8 @@ void Turn_180(turn_result_t *res) {
     res->timed_out            = a.timed_out | b.timed_out;
     res->recal_ok             = b.recal_ok;
     res->initial_error_tenths = a.initial_error_tenths + b.initial_error_tenths;
+    res->peak_rate            = (a.peak_rate > b.peak_rate) ? a.peak_rate : b.peak_rate;
+    res->wrong_way            = a.wrong_way | b.wrong_way;
 #else
     Turn_Execute(180, TURN_RIGHT, res);
 #endif

@@ -159,6 +159,11 @@ int main(void) {
         // TURN_STOP_MARGIN_DEG in that direction.
         Debug_KV("err10", r.initial_error_tenths);
         Debug_KV("nudges", r.nudges_used);
+        // peak near 32767 = the gyro clipped at +/-500 dps, so the heading
+        // under-read and the chassis physically overshot. wrong=1 = it rotated
+        // the opposite way to the one commanded.
+        Debug_KV("peak", r.peak_rate);
+        Debug_KV("wrong", r.wrong_way);
         Debug_NL();
         Motors_Stop();
         for (;;) { }
@@ -189,6 +194,8 @@ int main(void) {
             Debug_KV("ang10", r.achieved_tenths);
             Debug_KV("err10", r.initial_error_tenths);
             Debug_KV("nudges", r.nudges_used);
+            Debug_KV("peak", r.peak_rate);
+            Debug_KV("wrong", r.wrong_way);
             Debug_NL();
         }
 

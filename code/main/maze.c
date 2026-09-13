@@ -254,6 +254,10 @@ void Maze_Tick(int16_t gyro_rate) {
         Debug_KV("ang10", r.achieved_tenths);
         Debug_KV("nudge", r.nudges_used);
         Debug_KV("to", r.timed_out);
+        // A wrong-way pivot here is the expensive one: the maze solver thinks
+        // it went right when it went left, and every position estimate after
+        // this point is wrong.
+        if (r.wrong_way) Debug_Str("WRONG WAY ");
         Debug_NL();
         enter(ST_RECOVERING);
         break;

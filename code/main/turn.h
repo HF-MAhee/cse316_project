@@ -19,6 +19,22 @@ typedef struct {
     // watch to tell whether the "stop early, let it coast the rest" guess is
     // running consistently high or low.
     int32_t initial_error_tenths;
+
+    // Largest |yaw rate| seen during the turn, raw LSB. At +/-500 dps the
+    // gyro clips at 32767; a clipped sample integrates LOW, so the heading
+    // under-reads and the robot physically overshoots while the code believes
+    // it hit the target. Anything above ~25000 (~380 deg/s) means the kick or
+    // nudge PWM is too high for this range.
+    int32_t peak_rate;
+
+    // 1 when the chassis rotated the OPPOSITE way to the one commanded.
+    // execute_single() measures |heading|, so a wrong-way turn otherwise
+    // completes and reports success -- fine to spot by eye in Mode 2, silent
+    // navigation garbage in Mode 3. Assumes positive gyro Z = turning LEFT
+    // (so a TURN_RIGHT should accumulate NEGATIVE); if this reads 1 on every
+    // turn while the robot visibly turns the right way, that convention is
+    // inverted on your board, not the motors.
+    uint8_t wrong_way;
 } turn_result_t;
 
 // Blocking closed-loop pivot. Sonar is meaningless while rotating, so the

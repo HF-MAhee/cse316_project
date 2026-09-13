@@ -411,6 +411,14 @@
                                        // two 90s
 #define SQUARE_SIDES             4
 
+// Per-phase turn tracing. A turn is blocking and prints nothing per sample
+// today, so a Mode 2 run yields ONE summary line -- not enough to tell a
+// too-short settle from a too-long coast from a clipping gyro. With this on,
+// each phase boundary prints the heading it ended at (about 10 short lines
+// per turn, ~250 bytes over ~1.5 s: no risk to the byte budget). Turn it off
+// for Mode 3 runs, where it would interleave with corridor telemetry.
+#define TURN_TRACE               1
+
 // ---------------------------------------------------------------------------
 //  16. DEBUG
 // ---------------------------------------------------------------------------
