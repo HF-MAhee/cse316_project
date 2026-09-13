@@ -301,7 +301,21 @@
 #define TURN_STOP_MARGIN_DEG   4    // cut the main sweep this early
 #define TURN_DEADBAND_DEG      2    // "close enough"
 #define TURN_NUDGE_PWM         140
-#define TURN_NUDGE_MS          22
+
+// Nudge duration SCALES with the remaining error instead of firing the same
+// fixed-length pulse regardless of how far off the turn is. A fixed pulse
+// either wastes correction attempts creeping toward a large residual error,
+// or overcorrects a 1 degree residual by the same amount used for a 6 degree
+// one -- which is how a "converging" turn ends up oscillating around the
+// target instead of settling into TURN_DEADBAND_DEG.
+// ms = clamp(error_deg * TURN_NUDGE_MS_PER_DEG, MIN, MAX). Tune
+// TURN_NUDGE_MS_PER_DEG by watching `err10`/nudge count in Mode 2 telemetry:
+// still 2+ nudges of the same sign in a row -> raise it; nudges routinely
+// overshoot the deadband the other way -> lower it.
+#define TURN_NUDGE_MS_MIN      8
+#define TURN_NUDGE_MS_MAX      40
+#define TURN_NUDGE_MS_PER_DEG  6    // ms per whole degree of residual error
+
 #define TURN_MAX_NUDGES        5
 #define TURN_TIMEOUT_MS        7000 // safety: abort a turn that never finishes
 

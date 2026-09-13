@@ -118,6 +118,11 @@ int main(void) {
         Turn_90(TURN_RIGHT, &r);
         Debug_Str("turn test ");
         Debug_KV("ang10", r.achieved_tenths);
+        // err10 > 0: the fixed early-stop + coast undershot this run, needed
+        // more rotation. err10 < 0: it overshot, needed a reverse nudge.
+        // Consistently one sign across repeated runs -> retune
+        // TURN_STOP_MARGIN_DEG in that direction.
+        Debug_KV("err10", r.initial_error_tenths);
         Debug_KV("nudges", r.nudges_used);
         Debug_NL();
         Motors_Stop();
