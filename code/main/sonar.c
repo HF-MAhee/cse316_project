@@ -24,12 +24,29 @@ typedef struct {
 static sonar_t s[SONAR_COUNT];
 static uint8_t s_turn = 0;
 
-// Rolling record of whether each of the last FRONT_VOTE_WINDOW front pings
-// saw something inside FRONT_BLOCKED_CM. Used instead of "N consecutive"
-// because a yawing chassis swings the front beam off a real obstacle for
-// several pings at a time.
-static uint8_t s_front_votes[FRONT_VOTE_WINDOW];
-static uint8_t s_front_vi = 0;
+// Rolling record of the last FRONT_VOTE_WINDOW front pings. Used instead of
+// "N consecutive" because a yawing chassis swings the front beam off a real
+// obstacle for several pings at a time.
+//
+// This stores the DISTANCE, not a blocked/clear flag against one fixed
+// threshold. Storing the flag meant every caller was locked to
+// FRONT_BLOCKED_CM, so a mode that wants to close in further than the
+// junction classifier does (Mode 10's dead-end stop) had no way to ask
+// without also changing what counts as a junction. A ping that must not vote
+// at all -- no echo, or an implausible jump -- is stored as SONAR_NO_ECHO, so
+// it is above every threshold and counts as clear at any distance.
+static uint16_t s_front_dist[FRONT_VOTE_WINDOW];
+static uint8_t  s_front_vi = 0;
+
+// How many of the last FRONT_VOTE_WINDOW front pings saw something closer
+// than cm.
+static uint8_t front_votes_below(uint16_t cm) {
+    uint8_t i, votes = 0;
+    for (i = 0; i < FRONT_VOTE_WINDOW; i++) {
+        if (s_front_dist[i] < cm) votes++;
+    }
+    return votes;
+}
 
 void Sonar_Init(void) {
     uint8_t i, k;
@@ -56,7 +73,7 @@ void Sonar_Init(void) {
         s[i].confident = 0;
         for (k = 0; k < HIST; k++) s[i].hist[k] = SONAR_NO_ECHO;
     }
-    for (i = 0; i < FRONT_VOTE_WINDOW; i++) s_front_votes[i] = 0;
+    for (i = 0; i < FRONT_VOTE_WINDOW; i++) s_front_dist[i] = SONAR_NO_ECHO;
     s_front_vi = 0;
     s_turn = 0;
 }
@@ -160,18 +177,20 @@ void Sonar_Task(void) {
     // must never be filtered out as noise.
     p->confident = p->too_close ? 1 : (implausible_jump ? 0 : 1);
 
-    // Record a front-obstacle vote for this ping. A real obstacle gets
-    // CLOSER gradually as the robot advances; a step bigger than
+    // Record this front ping's distance for the vote window. A real obstacle
+    // gets CLOSER gradually as the robot advances; a step bigger than
     // SONAR_MAX_JUMP_CM in one 60ms refresh is the front beam catching the
     // side wall during a correction turn, not the corridor suddenly
-    // shrinking, so it must not vote "blocked" -- that gates it the same way
-    // implausible_jump already gates p->confident above. A too-close reading
-    // always votes regardless: it is a safety signal, not steering noise.
+    // shrinking, so it must not vote -- that gates it the same way
+    // implausible_jump already gates p->confident above. Such a ping is stored
+    // as SONAR_NO_ECHO so it reads as clear at every threshold.
+    // A too-close reading always votes regardless, at distance 0: it is a
+    // safety signal, not steering noise, and 0 is below any threshold.
     if (s_turn == SONAR_FRONT) {
-        uint8_t blocked = (p->too_close) ? 1
-                        : ((!implausible_jump && v != SONAR_NO_ECHO &&
-                            v < FRONT_BLOCKED_CM) ? 1 : 0);
-        s_front_votes[s_front_vi] = blocked;
+        uint16_t d = (p->too_close) ? 0
+                   : ((!implausible_jump && v != SONAR_NO_ECHO) ? v
+                                                                : SONAR_NO_ECHO);
+        s_front_dist[s_front_vi] = d;
         s_front_vi = (uint8_t)((s_front_vi + 1) % FRONT_VOTE_WINDOW);
     }
 
@@ -210,28 +229,28 @@ uint8_t Sonar_IsTooClose(sonar_id_t id) {
     return s[id].too_close;
 }
 
-uint8_t Sonar_FrontBlocked(void) {
-    uint8_t i, votes = 0;
+uint8_t Sonar_FrontCloserThan(uint16_t cm) {
     // An obstacle seen in ANY FRONT_VOTE_THRESHOLD of the last
     // FRONT_VOTE_WINDOW pings counts as real. The old version tested only the
     // single most recent ping, so a correction turn that walked the beam off
     // target hid the obstacle completely -- the robot drove into a wall while
     // the front sonar reported 51..65 cm of clear space.
-    for (i = 0; i < FRONT_VOTE_WINDOW; i++) votes = (uint8_t)(votes + s_front_votes[i]);
-    return (votes >= FRONT_VOTE_THRESHOLD) ? 1 : 0;
+    return (front_votes_below(cm) >= FRONT_VOTE_THRESHOLD) ? 1 : 0;
+}
+
+uint8_t Sonar_FrontBlocked(void) {
+    return Sonar_FrontCloserThan(FRONT_BLOCKED_CM);
 }
 
 // Number of the last FRONT_VOTE_WINDOW pings that saw an obstacle. Exposed
 // for telemetry so a near-miss (1 vote) is visible before it becomes a stop.
 uint8_t Sonar_FrontVotes(void) {
-    uint8_t i, votes = 0;
-    for (i = 0; i < FRONT_VOTE_WINDOW; i++) votes = (uint8_t)(votes + s_front_votes[i]);
-    return votes;
+    return front_votes_below(FRONT_BLOCKED_CM);
 }
 
 void Sonar_Flush(void) {
     uint8_t i, k;
-    for (i = 0; i < FRONT_VOTE_WINDOW; i++) s_front_votes[i] = 0;
+    for (i = 0; i < FRONT_VOTE_WINDOW; i++) s_front_dist[i] = SONAR_NO_ECHO;
     s_front_vi = 0;
     for (i = 0; i < SONAR_COUNT; i++) {
         s[i].hist_n = 0;

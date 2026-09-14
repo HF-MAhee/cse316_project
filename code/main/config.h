@@ -594,6 +594,29 @@
 // only puts the narrow rear corner there. Hence: turn AWAY from the near wall.
 #define PIVOT_FRONT_RADIUS_CM  17   // sqrt(SONAR_TO_AXLE^2 + (WIDTH/2)^2)
 
+// How close the FRONT sonar may read before a pivot grazes the wall. The wall
+// sits (reading + SONAR_TO_AXLE_CM) from the axle and the corner swings
+// PIVOT_FRONT_RADIUS_CM, so the corner clears by (reading - 2). At a reading
+// of 2 cm it exactly touches.
+#define PIVOT_FRONT_NEED_CM    (PIVOT_FRONT_RADIUS_CM - SONAR_TO_AXLE_CM)  // 2 cm
+
+// Distance at which Mode 10 calls the obstacle a dead end and stops.
+//
+// DELIBERATELY NOT FRONT_BLOCKED_CM (25). That constant is shared with the
+// junction classifier, where it has to be generous enough that a T-junction's
+// front wall registers as blocked BEFORE the two side openings appear -- see
+// section 9. Stopping a dead-end run 25 cm out is far earlier than the pivot
+// needs, but lowering the shared constant to fix that would break junction
+// detection everywhere. Hence a separate knob, read through
+// Sonar_FrontCloserThan() so it keeps the same vote-window robustness.
+//
+// TUNING: this is the distance the stop is TRIGGERED at, not where the
+// chassis ends up -- Drive_Stop() has no active brake, so it coasts on.
+// The [1] line of the run log prints the real post-coast distance; the gap
+// between the two is your actual coast at this speed. Lower this until that
+// printed figure is a few cm off the wall and no lower.
+#define DEADEND_STOP_CM        12
+
 // Free space the pivot needs on the side it rotates into, measured from the
 // chassis flank (which is ROBOT_WIDTH_CM/2 out from the pivot axis) -- i.e.
 // how much the side sonar must be reading for the front corner to clear.
@@ -605,11 +628,21 @@
 #define DEADEND_DECIDE_MARGIN_CM 3
 #define DEADEND_TIE_DIR          TURN_RIGHT
 
-// Drive_Stop() has no active brake: the chassis coasts (~17 cm measured) after
-// the motors cut, so where it STOPS is much closer to the wall than where it
-// DECIDED to stop. The direction rule fixes the lateral clearance problem but
-// does nothing for the front one -- back up first to buy the front corners
-// room. Timed, because there are no encoders.
+// Drive_Stop() has no active brake: the chassis coasts after the motors cut,
+// so where it STOPS is closer to the wall than where it DECIDED to stop. The
+// direction rule fixes the lateral clearance problem but does nothing for the
+// front one, so when the coast leaves the nose against the wall the run backs
+// up to buy the front corners room. Timed, because there are no encoders.
+//
+// CONDITIONAL: the reverse only runs when the post-coast front reading is
+// below DEADEND_BACKUP_TRIGGER_CM (or the front reads too-close to measure).
+// Above that there is already room and reversing is wasted travel that just
+// puts the chassis somewhere else in the corridor. Set the trigger to 0 to
+// disable the reverse entirely, or to a large number to force it every run.
+//
+// The default leaves (8 - PIVOT_FRONT_NEED_CM) = 6 cm of margin over the
+// reading at which a front corner exactly grazes the wall.
+#define DEADEND_BACKUP_TRIGGER_CM 8
 #define DEADEND_BACKUP_PWM     90
 #define DEADEND_BACKUP_MS      400
 

@@ -229,39 +229,63 @@ static void deadend_sequence(void) {
     uint16_t l_cm, r_cm, f_cm;
     turn_dir_t dir;
     uint16_t chosen_cm;
+    uint8_t  too_close, backed_up;
 
     Debug_P("MODE10: front blocked -- treating as a DEAD END\r\n");
     Debug_Flush();
 
     // ---- where did it ACTUALLY stop? ------------------------------------
-    // Drive_Stop() has no active brake. A measured run coasted ~17 cm past
-    // the point that triggered the stop, so the distance that fired the
-    // trigger is not the distance in front of the robot now.
+    // Drive_Stop() has no active brake, so the chassis coasts past the point
+    // that triggered the stop. The trigger distance is therefore NOT the
+    // distance in front of the robot now, and only this reading is.
+    // The gap between DEADEND_STOP_CM and what prints here is the real coast
+    // at this speed -- the number to tune DEADEND_STOP_CM against.
     Timer_WaitMs(GYRO_SETTLE_MS);
     Sonar_Flush();
     deadend_reprime(12);
-    f_cm = Sonar_Median(SONAR_FRONT);
+    f_cm      = Sonar_Median(SONAR_FRONT);
+    too_close = Sonar_IsTooClose(SONAR_FRONT);
     Debug_P("[1] stopped with ");
-    Debug_Int((int32_t)f_cm);
-    Debug_P(" cm ahead after the coast\r\n");
+    if (too_close) Debug_P("a wall too close to measure");
+    else {
+        Debug_Int((int32_t)f_cm);
+        Debug_P(" cm");
+    }
+    Debug_P(" ahead (triggered at ");
+    Debug_Int((int32_t)DEADEND_STOP_CM);
+    Debug_P(" cm, so it coasted the difference)\r\n");
     Debug_Flush();
 
-    // ---- back out of the coast ------------------------------------------
-    // The direction rule below solves the LATERAL clearance problem only.
-    // The front corners still swing PIVOT_FRONT_RADIUS_CM forward of the
-    // axle, so if the coast left the nose against the wall no choice of
-    // direction helps. Buy that room back before deciding anything.
-    Debug_P("[2] backing off ");
-    Debug_Int((int32_t)DEADEND_BACKUP_MS);
-    Debug_P(" ms to clear the front corners\r\n");
-    Debug_Flush();
-    Motors_SetLeft(DIR_REV, DEADEND_BACKUP_PWM);
-    Motors_SetRight(DIR_REV, DEADEND_BACKUP_PWM);
-    Timer_WaitMs(DEADEND_BACKUP_MS);
-    Motors_Stop();
-    Timer_WaitMs(GYRO_SETTLE_MS);
+    // ---- back out of the coast, ONLY if it needs to ----------------------
+    // The direction rule below solves the LATERAL clearance problem only. The
+    // front corners still swing PIVOT_FRONT_RADIUS_CM forward of the axle, so
+    // if the coast left the nose against the wall no choice of direction
+    // helps -- but if it stopped with room to spare, reversing is wasted
+    // travel that only moves the chassis somewhere else in the corridor.
+    // A too-close front always reverses: the sensor cannot say how bad it is.
+    backed_up = 0;
+    if (too_close || f_cm < DEADEND_BACKUP_TRIGGER_CM) {
+        Debug_P("[2] too close to pivot (want ");
+        Debug_Int((int32_t)DEADEND_BACKUP_TRIGGER_CM);
+        Debug_P("+ cm) -- backing off ");
+        Debug_Int((int32_t)DEADEND_BACKUP_MS);
+        Debug_P(" ms\r\n");
+        Debug_Flush();
+        Motors_SetLeft(DIR_REV, DEADEND_BACKUP_PWM);
+        Motors_SetRight(DIR_REV, DEADEND_BACKUP_PWM);
+        Timer_WaitMs(DEADEND_BACKUP_MS);
+        Motors_Stop();
+        Timer_WaitMs(GYRO_SETTLE_MS);
+        backed_up = 1;
+    } else {
+        Debug_P("[2] enough room ahead already -- no reverse needed\r\n");
+        Debug_Flush();
+    }
 
     // ---- measure both walls from where the pivot will happen -------------
+    // Re-measured even when no reverse ran: the [1] readings were taken
+    // before this point either way, and the side sensors have not been read
+    // since the chassis stopped moving.
     Sonar_Flush();
     deadend_reprime(12);
     l_cm = deadend_side_cm(SONAR_LEFT);
@@ -274,7 +298,19 @@ static void deadend_sequence(void) {
     deadend_print_side(r_cm);
     Debug_P("  F=");
     Debug_Int((int32_t)f_cm);
-    Debug_P(" cm\r\n");
+    if (backed_up) Debug_P(" cm (after the reverse)\r\n");
+    else           Debug_P(" cm\r\n");
+
+    // The front corner grazes the wall at a reading of PIVOT_FRONT_NEED_CM.
+    // Warn rather than abort: the pivot may still complete, and knowing it ran
+    // this tight is what tells you whether to raise DEADEND_BACKUP_TRIGGER_CM
+    // or DEADEND_BACKUP_MS for the next run.
+    if (Sonar_IsTooClose(SONAR_FRONT) ||
+        (Sonar_IsValid(SONAR_FRONT) && f_cm <= PIVOT_FRONT_NEED_CM)) {
+        Debug_P("    WARNING: a front corner will graze the wall at this\r\n");
+        Debug_P("    distance. Raise DEADEND_BACKUP_TRIGGER_CM or\r\n");
+        Debug_P("    DEADEND_BACKUP_MS, or stop further out.\r\n");
+    }
     Debug_Flush();
 
     // ---- choose the rotation direction ----------------------------------
@@ -878,9 +914,12 @@ int main(void) {
             }
 
             if (state == 1) {
-                // Same debounce as Modes 1 and 7 -- one bad ping must not
-                // trigger a turnaround in the middle of a clear corridor.
-                if (Sonar_FrontBlocked()) {
+                // DEADEND_STOP_CM, not FRONT_BLOCKED_CM: this closes in much
+                // nearer than the junction classifier does, without changing
+                // what counts as a junction for Mode 3. Same vote window, so
+                // a yaw that swings the beam off the wall still cannot hide
+                // it. Debounced on top of that like Modes 1 and 7.
+                if (Sonar_FrontCloserThan(DEADEND_STOP_CM)) {
                     if (block_hits < 255) block_hits++;
                 } else {
                     block_hits = 0;

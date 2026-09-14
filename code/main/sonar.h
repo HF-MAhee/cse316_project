@@ -24,6 +24,14 @@ uint8_t  Sonar_IsOpen(sonar_id_t id);
 // 1 when the front is closer than FRONT_BLOCKED_CM.
 uint8_t  Sonar_FrontBlocked(void);
 
+// Same voting rule, at a caller-chosen distance: 1 when at least
+// FRONT_VOTE_THRESHOLD of the last FRONT_VOTE_WINDOW front pings came back
+// closer than cm. Use this when a mode needs to close in nearer than the
+// junction classifier's FRONT_BLOCKED_CM without changing what counts as a
+// junction everywhere else -- lowering that shared constant would make a
+// T-junction's front wall register too late and read as the maze exit.
+uint8_t  Sonar_FrontCloserThan(uint16_t cm);
+
 // How many of the last FRONT_VOTE_WINDOW front pings saw an obstacle.
 uint8_t  Sonar_FrontVotes(void);
 
