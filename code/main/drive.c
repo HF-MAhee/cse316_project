@@ -72,10 +72,13 @@ static int16_t hold_sample(uint32_t *next_ms) {
     return Gyro_Rate(g.z);
 }
 
-void Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
-    uint32_t t0      = millis();
-    uint32_t next_ms = t0 + HOLD_TICK_MS;
-    int32_t  worst   = 0;      // largest |heading error| seen, raw
+int32_t Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
+    uint32_t t0        = millis();
+    uint32_t next_ms   = t0 + HOLD_TICK_MS;
+    int32_t  worst     = 0;    // largest |heading error| seen, raw
+    int32_t  corr_sum  = 0;    // for the mean -- a persistent non-zero mean is
+    uint16_t n_samples = 0;    // the signature of a weaker motor on one side
+    uint8_t  decimate  = 0;
 
     Heading_Reset();
 
@@ -119,16 +122,55 @@ void Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
         s_dbg.pwm_r     = (uint8_t)r;
         s_dbg.branch    = BRANCH_NORMAL;
         Motors_Forward((uint8_t)l, (uint8_t)r);
+
+        corr_sum += corr;
+        if (n_samples < 0xFFFF) n_samples++;
+
+#if HOLD_TRACE
+        if (++decimate >= HOLD_SAMPLE_EVERY) {
+            decimate = 0;
+            Debug_Str("L,");
+            Debug_Int((int32_t)(millis() - t0));
+            Debug_Str(",");
+            Debug_Int(err_deg10);
+            Debug_Str(",");
+            Debug_Int(rate);
+            Debug_Str(",");
+            Debug_Int(corr);
+            Debug_Str(",");
+            Debug_Int(l);
+            Debug_Str(",");
+            Debug_Int(r);
+            Debug_NL();
+        }
+#else
+        (void)decimate;
+#endif
     }
 
     Motors_Stop();
 
-    // How well the leg actually tracked. off10 is where it finished relative
-    // to the heading it was holding; max10 is the worst excursion on the way.
+    // How well the leg tracked.
+    //   off10   where it finished relative to the heading it was holding
+    //   max10   worst excursion on the way there
+    //   net10   total rotation over the leg, for the whole-square accounting
+    //   mcorr10 MEAN correction in TENTHS of a PWM count (tenths so a small
+    //           steady bias does not round away). Near zero = the wheels are
+    //           matched and the controller only fights noise. Persistently
+    //           non-zero = one motor is systematically weaker and the
+    //           controller is holding a constant offset to compensate, which
+    //           no amount of gyro tuning will fix.
+    //   drop    cumulative; compare leg to leg to confirm the L stream is intact
     Debug_Str("  HOLD ");
     Debug_KV("off10", ((Heading_Raw() + start_offset_raw) * 10L) / GYRO_LSB_MS_PER_DEGREE);
     Debug_KV("max10", (worst * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_KV("net10", (Heading_Raw() * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_KV("mcorr10", n_samples ? ((corr_sum * 10L) / (int32_t)n_samples) : 0);
+    Debug_KV("n", (int32_t)n_samples);
+    Debug_KV("drop", Debug_Dropped());
     Debug_NL();
+
+    return Heading_Raw();
 }
 
 void Drive_Tick(int16_t gyro_rate) {

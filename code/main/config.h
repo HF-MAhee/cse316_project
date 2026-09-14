@@ -240,6 +240,22 @@
 #define HOLD_KP_NUM            1
 #define HOLD_KP_DEN            8
 
+// Per-sample trace of the heading-hold controller, so a leg that does not
+// track straight can be diagnosed from the log instead of guessed at:
+//   L,<ms into leg>,<err10>,<rate>,<corr>,<pwmL>,<pwmR>
+// err10 is heading error in tenths of a degree (+ = left of target), rate is
+// raw LSB, corr is the differential the controller asked for, and pwmL/pwmR
+// are what actually reached the motors AFTER clamping -- when those two stop
+// differing by 2*corr, the correction is being eaten by MOTOR_MIN_PWM or
+// MOTOR_MAX_PWM and the controller has no authority left.
+//
+// A line is ~34 bytes. At HOLD_TICK_MS=10 every sample would be ~3400 byte/s
+// against a 3840 byte/s budget at 38400 baud -- no headroom, so bytes drop.
+// Decimating by 2 puts it near 44%. Raise this if `drop` climbs in the
+// per-leg summary.
+#define HOLD_TRACE             1
+#define HOLD_SAMPLE_EVERY      2
+
 // WALL-STUCK RECOVERY.
 // The ramped emergency steer above still drives BOTH wheels forward -- it
 // only varies the split. If a chassis corner physically catches the wall
@@ -459,6 +475,12 @@
                                        // TURN_180_AS_TWO_90S uses between its
                                        // two 90s
 #define SQUARE_SIDES             4
+
+// Also stream the per-sample yaw-rate profile through each of the square's
+// turns (the same stream Mode 6 uses). Legs and turns never overlap, so this
+// costs no extra bandwidth during a leg. Set 0 for a quieter log once the
+// turns are trusted and only the legs are in question.
+#define SQUARE_TRACE_TURNS       1
 
 // Per-phase turn tracing. A turn is blocking and prints nothing per sample
 // today, so a Mode 2 run yields ONE summary line -- not enough to tell a

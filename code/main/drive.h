@@ -49,7 +49,11 @@ void          Drive_Stop(void);
 // it should hold, in raw LSB*ms, positive = rotated LEFT of it. Feed a turn's
 // turn_result_t.residual_raw in here and the leg steers that leftover out,
 // instead of every turn's error accumulating into the next leg.
-void          Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw);
+//
+// Returns the leg's NET heading change in raw LSB*ms (+ = net rotation left),
+// so a caller running several legs and turns can account for the total
+// rotation over the whole path -- a closed square must come to -360 degrees.
+int32_t       Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw);
 center_mode_t Drive_Mode(void);
 int16_t       Drive_LastCorrection(void);
 #endif
