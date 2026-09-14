@@ -72,14 +72,20 @@ static int16_t hold_sample(uint32_t *next_ms) {
     return Gyro_Rate(g.z);
 }
 
-int32_t Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
+// Shared body for both straight-drive entry points. watch_front makes it ping
+// the sonar each tick and stop early on a debounced front obstacle; otherwise
+// it simply runs for the full duration.
+static int32_t straight_hold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw,
+                             uint8_t watch_front, uint8_t *blocked_out) {
     uint32_t t0        = millis();
     uint32_t next_ms   = t0 + HOLD_TICK_MS;
     int32_t  worst     = 0;    // largest |heading error| seen, raw
     int32_t  corr_sum  = 0;    // for the mean -- a persistent non-zero mean is
     uint16_t n_samples = 0;    // the signature of a weaker motor on one side
     uint8_t  decimate  = 0;
+    uint8_t  block_hits = 0;
 
+    if (blocked_out) *blocked_out = 0;
     Heading_Reset();
 
     // Breakaway kick. Tracked, unlike Drive_Begin()'s -- both wheels forward
@@ -126,6 +132,23 @@ int32_t Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
         corr_sum += corr;
         if (n_samples < 0xFFFF) n_samples++;
 
+        // Obstacle watch. One ping per tick, round-robin, so the FRONT sensor
+        // refreshes every third tick (30ms) -- under a centimetre of travel
+        // between looks. Debounced the same way every other front stop in the
+        // project is, so a single bad ping cannot halt the run.
+        if (watch_front) {
+            Sonar_Task();
+            if (Sonar_FrontBlocked()) {
+                if (block_hits < 255) block_hits++;
+            } else {
+                block_hits = 0;
+            }
+            if (block_hits >= FRONT_STOP_CONFIRM) {
+                if (blocked_out) *blocked_out = 1;
+                break;
+            }
+        }
+
 #if HOLD_TRACE
         if (++decimate >= HOLD_SAMPLE_EVERY) {
             decimate = 0;
@@ -171,6 +194,15 @@ int32_t Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
     Debug_NL();
 
     return Heading_Raw();
+}
+
+int32_t Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
+    return straight_hold(pwm, ms, start_offset_raw, 0, 0);
+}
+
+int32_t Drive_StraightUntilBlocked(uint8_t pwm, uint32_t max_ms,
+                                   int32_t start_offset_raw, uint8_t *blocked_out) {
+    return straight_hold(pwm, max_ms, start_offset_raw, 1, blocked_out);
 }
 
 void Drive_Tick(int16_t gyro_rate) {

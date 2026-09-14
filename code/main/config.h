@@ -501,6 +501,33 @@
 // turns are trusted and only the legs are in question.
 #define SQUARE_TRACE_TURNS       1
 
+// ---------------------------------------------------------------------------
+//  Mode 9: open-space obstacle avoidance
+// ---------------------------------------------------------------------------
+// Forward under gyro heading hold (no corridor, no wall centring) until the
+// front sonar sees something, then stop, pivot right 90, and drive one more
+// leg. Safety bound on the approach so an empty room does not mean driving
+// until the battery dies.
+#define AVOID_APPROACH_MAX_MS    15000UL
+
+// How far the second leg actually travels, and therefore how much room must
+// be clear in that direction BEFORE committing to the pivot. Derived rather
+// than guessed so it tracks the leg settings.
+//
+// CAVEAT: TRAVEL_SPEED_CMS is still the unmeasured placeholder (20), so this
+// figure is only as good as that constant. Measure it and this tightens up.
+#define AVOID_LEG_CM             (((uint32_t)SQUARE_LEG_MS * TRAVEL_SPEED_CMS) / 1000UL)
+#define AVOID_TURN_CLEARANCE_CM  (AVOID_LEG_CM + FRONT_BLOCKED_CM)
+
+// Clearance the PIVOT itself needs ahead of the front sonar. The axle sits
+// SONAR_TO_AXLE_CM behind the sonar face, and the front corners swing on a
+// radius of sqrt(SONAR_TO_AXLE^2 + (WIDTH/2)^2) = sqrt(15^2 + 8^2) = 17cm
+// about that axle -- note that is NOT the 13.6cm half-diagonal, which is the
+// radius about the geometric centre, and the axle is 4cm behind it. So the
+// corner clears the wall by (front_reading + SONAR_TO_AXLE_CM - 17). Stopping
+// with this much showing on the front sensor keeps that positive with margin.
+#define AVOID_PIVOT_CLEARANCE_CM 10
+
 // Per-phase turn tracing. A turn is blocking and prints nothing per sample
 // today, so a Mode 2 run yields ONE summary line -- not enough to tell a
 // too-short settle from a too-long coast from a clipping gyro. With this on,

@@ -54,6 +54,16 @@ void          Drive_Stop(void);
 // so a caller running several legs and turns can account for the total
 // rotation over the whole path -- a closed square must come to -360 degrees.
 int32_t       Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw);
+
+// Same controller, but it services the sonar and stops as soon as the FRONT
+// sensor reports a debounced obstacle, giving up after max_ms. Sets
+// *blocked_out to 1 if it stopped on an obstacle, 0 if it timed out -- the
+// caller must check, because "drove the whole way with nothing ahead" and
+// "found a wall" need very different follow-up. Returns the net heading change
+// like Drive_StraightHold().
+int32_t       Drive_StraightUntilBlocked(uint8_t pwm, uint32_t max_ms,
+                                         int32_t start_offset_raw,
+                                         uint8_t *blocked_out);
 center_mode_t Drive_Mode(void);
 int16_t       Drive_LastCorrection(void);
 #endif
