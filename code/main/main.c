@@ -27,6 +27,9 @@
 //        forward + 90 degree turn) to prove raw drive/turn capability
 //    6 = turn debugging -- repeats one pivot with a measuring pause after
 //        each, streaming the full yaw-rate profile. Nothing but the turn.
+//    7 = single obstacle-avoidance cycle -- wall-centred drive straight until
+//        the front is blocked, stop, turn right 90, then drive forward
+//        open-loop for one fixed leg. One cycle, then halts (not a loop).
 // ---------------------------------------------------------------------------
 #define BUILD_MODE 3
 
@@ -323,6 +326,61 @@ int main(void) {
                 }
             }
             // once stopped, motors stay off; telemetry keeps printing below
+        }
+#elif BUILD_MODE == 7
+        {
+            static uint8_t state      = 0;   // 0 not started, 1 approaching, 2 done
+            static uint8_t block_hits = 0;
+
+            if (state == 0 && millis() - run_start > STARTUP_DELAY_MS) {
+                Drive_Begin();
+                state = 1;
+                Debug_Str("MODE7: approaching obstacle\r\n");
+            }
+
+            if (state == 1) {
+                // Same debounce as Mode 1 -- a single bad ping should not
+                // trigger the turn early.
+                if (Sonar_FrontBlocked()) {
+                    if (block_hits < 255) block_hits++;
+                } else {
+                    block_hits = 0;
+                }
+
+                if (block_hits >= FRONT_STOP_CONFIRM) {
+                    turn_result_t r;
+
+                    Drive_Stop();
+                    Debug_Str("MODE7: obstacle detected, stopping\r\n");
+
+                    // Blocking, same as maze.c's own turn handling -- Turn_90
+                    // already flushes the sonar filters and resets heading
+                    // when it returns, so nothing pointed the wrong way
+                    // carries into the leg below.
+                    Debug_Str("MODE7: turning right\r\n");
+                    Turn_90(TURN_RIGHT, &r);
+                    Debug_KV("ang10", r.achieved_tenths);
+                    Debug_KV("wrong", r.wrong_way);
+                    Debug_NL();
+
+                    // Open-loop forward leg, same kick+cruise shape and the
+                    // same fixed speed/duration as the Mode 5 square test --
+                    // this is the same "prove the drive works" leg, just
+                    // triggered by an obstacle instead of a fixed repeat count.
+                    Debug_Str("MODE7: forward leg\r\n");
+                    Motors_Forward(KICK_PWM, KICK_PWM);
+                    Timer_WaitMs(KICK_MS);
+                    Motors_Forward(SQUARE_TEST_PWM, SQUARE_TEST_PWM);
+                    Timer_WaitMs(SQUARE_LEG_MS - KICK_MS);
+                    Motors_Stop();
+
+                    Debug_Str("MODE7 DONE\r\n");
+                    state = 2;
+                } else {
+                    Drive_Tick(rate);
+                }
+            }
+            // state 2: motors stay off; telemetry keeps printing below
         }
 #else
         Maze_Tick(rate);
