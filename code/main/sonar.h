@@ -32,6 +32,17 @@ uint8_t  Sonar_FrontBlocked(void);
 // T-junction's front wall register too late and read as the maze exit.
 uint8_t  Sonar_FrontCloserThan(uint16_t cm);
 
+// Raw vote count at a caller-chosen distance -- the un-thresholded version of
+// the above, for telemetry. Seeing this sit at 1 for a long stretch says the
+// obstacle is being detected intermittently and the stop is about to be late.
+uint8_t  Sonar_FrontVotesBelow(uint16_t cm);
+
+// Front pings discarded by the plausibility gate since boot (or the last
+// Sonar_Flush()). A discarded ping cannot vote, so each costs a full 60 ms
+// front refresh of detection delay. Climbing during an approach means the beam
+// is being walked off the target and the stop will come late.
+uint16_t Sonar_FrontGatedCount(void);
+
 // How many of the last FRONT_VOTE_WINDOW front pings saw an obstacle.
 uint8_t  Sonar_FrontVotes(void);
 

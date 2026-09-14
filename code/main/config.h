@@ -69,8 +69,19 @@
 // overshoot or approach-timing error. Verify this physically (Mode 2, watch
 // the corners during the pivot) before trusting it unsupervised. If it
 // clips, the fix is a wider corridor, not a software change.
-#define CORRIDOR_WIDTH_CM      30   // wall face to wall face
+// *** SET THIS TO YOUR ACTUAL BUILT CORRIDOR WIDTH. *** It is load-bearing in
+// more places than it looks: CORRIDOR_HALF_CM is the target distance for
+// single-wall centring (get it wrong and the robot deliberately drives
+// off-centre by the error), OPENING_THRESHOLD_CM and APPROACH_DISTANCE_CM are
+// both derived from it, and so is the emergency band below.
+// Raised 30 -> 40 to match the test maze that was actually designed and built.
+#define CORRIDOR_WIDTH_CM      40   // wall face to wall face
 #define CORRIDOR_HALF_CM       (CORRIDOR_WIDTH_CM / 2)
+
+// Free space each side of a PERFECTLY CENTRED robot. Everything that talks
+// about "how near is too near" has to be smaller than this, or the robot is
+// in a fault state while doing nothing wrong. See WALL_EMERGENCY_CM.
+#define CORRIDOR_SIDE_GAP_CM   ((CORRIDOR_WIDTH_CM - ROBOT_WIDTH_CM) / 2)
 
 // ---------------------------------------------------------------------------
 //  4. TIMING
@@ -212,11 +223,47 @@
 #define WALL_MAX_CORRECTION    ((DRIVE_BASE_PWM * WALL_MAX_CORRECTION_RATIO_PCT) / 100)
 
 // Emergency avoidance: inside this distance the proportional correction is
-// too slow. Severity now RAMPS with proximity rather than slamming to full
+// too slow. Severity RAMPS with proximity rather than slamming to full
 // differential at the threshold -- measured logs show a hard +-35 step at
 // exactly 8cm produced 71 deg/s of yaw and bounced the robot from one wall
 // straight into the other.
-#define WALL_EMERGENCY_CM      8
+//
+// THIS WAS A FIXED 8 AND THAT WAS A BUG. At CORRIDOR_WIDTH_CM=30 the centred
+// side gap is (30-16)/2 = 7 cm, so a PERFECTLY CENTRED robot sat inside the
+// emergency band on BOTH sides. Being slightly off-centre then put one side
+// under 8 while the other was over it, which is exactly the one-sided
+// emergency condition: the robot hard-steered away from a wall it was not
+// close to, and after WALL_STUCK_MS escalated to a reverse-and-pivot
+// recovery. That is the reported "behaves really badly when it isn't placed
+// exactly in the middle" -- it was a geometry contradiction, not tuning.
+//
+// Derived from the actual gap now, so it cannot contradict the corridor:
+// 45% of the centred gap, never below 4 cm (under that the sonar's own
+// SONAR_MIN_VALID_CM / too-close latch is the operative signal anyway).
+#define WALL_EMERGENCY_RAW     ((CORRIDOR_SIDE_GAP_CM * 45) / 100)
+#define WALL_EMERGENCY_CM      (WALL_EMERGENCY_RAW >= 4 ? WALL_EMERGENCY_RAW : 4)
+
+// Fail the BUILD rather than the run if the band ever swallows the centred
+// position again. A robot that is in a fault state while perfectly centred
+// cannot be tuned out of it.
+#if (WALL_EMERGENCY_CM) >= (CORRIDOR_SIDE_GAP_CM)
+#  error "WALL_EMERGENCY_CM >= CORRIDOR_SIDE_GAP_CM: a centred robot would be in permanent emergency. Widen CORRIDOR_WIDTH_CM or lower the emergency band."
+#endif
+
+// A one-sided emergency means "this wall is near AND the other side is where
+// the room is". In a corridor barely wider than the robot both sides can be
+// near at once; steering hard away from one then just drives into the other.
+// Require the far side to be at least this much clearer before treating the
+// situation as one-sided -- otherwise fall through to normal centring, which
+// splits the difference instead of picking a side.
+#define WALL_EMERG_ASYMMETRY_CM 3
+
+// Small differential errors are not worth steering for. error_cm is a
+// DIFFERENCE of the two side readings, so it is twice the actual off-centre
+// offset: 2 here means "ignore under 1 cm off-centre". Without this the
+// controller micro-steers continuously on sonar quantisation noise, and every
+// one of those little yaws walks the front beam off whatever is ahead.
+#define WALL_DEADBAND_CM        2
 
 // GYRO HEADING HOLD for timed straight legs (Modes 5 and 7).
 // This is the straight-line autocorrect from the original single-file
@@ -289,6 +336,29 @@
 #define WALL_RECOVERY_REV_MS    250
 #define WALL_RECOVERY_PIVOT_PWM 90   // in-place pivot, away from the wall
 #define WALL_RECOVERY_PIVOT_MS  300
+
+// The timer alone was too blunt a trigger: it fired whenever the robot was
+// still inside the emergency band after WALL_STUCK_MS, even when the steering
+// was working and the wall was steadily receding. Recovery is a violent,
+// position-destroying maneuver and must only run when steering has genuinely
+// FAILED. So the deadline now resets whenever the near wall gets this much
+// further away than the closest it had been -- progress restarts the clock,
+// and only a distance that refuses to improve escalates.
+#define WALL_STUCK_IMPROVE_CM   2
+
+// ACTIVE BRAKE for Drive_Stop().
+// Drive_Stop() used to be a bare Motors_Stop(), so the chassis coasted
+// unbraked -- around 17 cm was observed, which is most of a corridor width and
+// enough to put the nose into a wall the controller had correctly decided to
+// stop short of. Turns already brake with a reverse pulse (TURN_BRAKE_*); this
+// is the same idea for forward motion. Set DRIVE_BRAKE_MS to 0 to disable.
+//
+// Too long and the pulse pushes the robot backwards instead of stopping it.
+// The Mode 10 log prints the front distance at the stop decision and again
+// after the brake, so the residual coast is directly measurable -- tune
+// against that, not by eye.
+#define DRIVE_BRAKE_PWM         100
+#define DRIVE_BRAKE_MS          80
 
 // YAW GOVERNOR.
 // Hard ceiling on how fast the chassis may rotate while centring. Beyond
@@ -611,11 +681,49 @@
 // Sonar_FrontCloserThan() so it keeps the same vote-window robustness.
 //
 // TUNING: this is the distance the stop is TRIGGERED at, not where the
-// chassis ends up -- Drive_Stop() has no active brake, so it coasts on.
-// The [1] line of the run log prints the real post-coast distance; the gap
-// between the two is your actual coast at this speed. Lower this until that
-// printed figure is a few cm off the wall and no lower.
+// chassis ends up. The [1] line of the run log prints the real post-stop
+// distance; the gap between the two is the residual coast.
 #define DEADEND_STOP_CM        12
+
+// TWO-STAGE APPROACH -- this is what actually prevents hitting the wall, and
+// why DEADEND_STOP_CM no longer has to be guessed against an unknown coast.
+//
+// The first attempt drove at full DRIVE_BASE_PWM right up to DEADEND_STOP_CM
+// and then cut the motors. Coast distance at cruise is larger than the whole
+// stopping margin, so it hit the wall -- and no value of DEADEND_STOP_CM fixes
+// that reliably while the coast is unmeasured and speed-dependent.
+//
+// Instead: cruise until the obstacle is DEADEND_SLOW_CM away, then drop to
+// DEADEND_CREEP_PWM for the last stretch. Coast scales steeply with speed, so
+// creeping the final approach shrinks it to a couple of centimetres, and the
+// active brake in Drive_Stop() removes most of what is left. The stop then
+// lands where it was asked to regardless of what the cruise coast happens to
+// be.
+//
+// DEADEND_SLOW_CM must be comfortably larger than the CRUISE coast, since
+// that is the distance this transition has to happen within. It costs nothing
+// to be generous here -- the penalty is only a slower last 20 cm.
+#define DEADEND_SLOW_CM        35
+#define DEADEND_CREEP_PWM      48   // above MOTOR_MIN_PWM, below cruise
+
+// Do not accept a dead-end stop while the chassis is yawing faster than this:
+// off-axis the front beam can be ranging a SIDE wall, and stopping on that
+// reading turns a normal corridor into a phantom dead end. Raw LSB, 65.5 per
+// deg/sec, so 650 ~= 10 deg/sec. A too-close front bypasses this entirely --
+// that is a real collision signal, not a beam artefact.
+#define DEADEND_STRAIGHT_LSB   650
+
+// ...but do not wait forever for a straight moment either. If the stop has
+// been wanted this long and the chassis still will not settle, take it anyway
+// and say so in the log: a delayed stop eventually becomes a collision.
+#define DEADEND_STRAIGHT_MAX_MS 700
+
+// Per-tick trace. One line is ~56 bytes; at CONTROL_TICK_MS=20 every tick
+// would be ~2800 byte/s against 3840 byte/s at 38400 baud, leaving nothing for
+// the event lines. 2 puts it near 36%. Watch the `drop` figure in the run
+// summary: if it is climbing, raise this.
+#define DEADEND_TRACE          1
+#define DEADEND_TRACE_EVERY    2
 
 // Free space the pivot needs on the side it rotates into, measured from the
 // chassis flank (which is ROBOT_WIDTH_CM/2 out from the pivot axis) -- i.e.

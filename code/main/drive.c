@@ -15,6 +15,8 @@ static drive_debug_t s_dbg;
 // Wall-stuck recovery state. See WALL_STUCK_MS in config.h.
 static uint8_t  s_emerg_side    = 0; // 0 none, 1 left-near, 2 right-near
 static uint32_t s_emerg_since   = 0; // millis() the current side went near
+static uint16_t s_emerg_best_cm = 0; // furthest the near wall has got since
+                                     // then -- progress resets the stuck timer
 static uint8_t  s_recover_phase = 0; // 0 none, 1 reversing, 2 pivoting away
 static uint32_t s_recover_until = 0; // millis() deadline for current phase
 
@@ -26,6 +28,7 @@ void Drive_Begin(void) {
     s_hold_heading = 0;
     s_emerg_side    = 0;
     s_emerg_since   = 0;
+    s_emerg_best_cm = 0;
     s_recover_phase = 0;
     s_recover_until = 0;
     Heading_Reset();
@@ -36,6 +39,20 @@ void Drive_Begin(void) {
 }
 
 void Drive_Stop(void) {
+#if DRIVE_BRAKE_MS > 0
+    // ACTIVE BRAKE. Cutting the motors alone leaves the chassis coasting --
+    // around 17 cm was observed, enough to put the nose into a wall the
+    // controller had correctly decided to stop short of. A brief reverse pulse
+    // dumps that momentum, the same way TURN_BRAKE_* already does for pivots.
+    //
+    // Blocking for DRIVE_BRAKE_MS will overrun one control tick. That is
+    // deliberate and harmless HERE specifically: the robot is stopping, so
+    // there is no control decision left for this tick to make. Expect one
+    // TICK_OVERRUN_WARN_MS count per stop.
+    Motors_SetLeft(DIR_REV,  DRIVE_BRAKE_PWM);
+    Motors_SetRight(DIR_REV, DRIVE_BRAKE_PWM);
+    Timer_WaitMs(DRIVE_BRAKE_MS);
+#endif
     Motors_Stop();
     s_last_corr = 0;
     // Clear the diagnostic snapshot too. Drive_Tick() stops being called once
@@ -205,7 +222,7 @@ int32_t Drive_StraightUntilBlocked(uint8_t pwm, uint32_t max_ms,
     return straight_hold(pwm, max_ms, start_offset_raw, 1, blocked_out);
 }
 
-void Drive_Tick(int16_t gyro_rate) {
+static void tick_at(uint8_t base, int16_t gyro_rate) {
     uint8_t l_ok = Sonar_IsValid(SONAR_LEFT);
     uint8_t r_ok = Sonar_IsValid(SONAR_RIGHT);
     uint16_t l_cm = Sonar_Median(SONAR_LEFT);
@@ -221,6 +238,25 @@ void Drive_Tick(int16_t gyro_rate) {
                      (r_ok && r_cm <= WALL_EMERGENCY_CM);
     int16_t error_cm = 0;
     int16_t corr;
+    // Steering authority scales with the base speed it is a differential
+    // about, so a creeping approach steers as gently as it drives instead of
+    // spinning on the spot. At base == DRIVE_BASE_PWM this is exactly the old
+    // WALL_MAX_CORRECTION.
+    int16_t max_corr = (int16_t)(((int32_t)base * WALL_MAX_CORRECTION_RATIO_PCT) / 100);
+
+    // A one-sided emergency is only meaningful when the other side actually
+    // has room to steer into. In a corridor barely wider than the chassis both
+    // walls can sit inside the band at once, and hard-steering away from one
+    // then drives into the other. Demote to normal centring unless the far
+    // side is meaningfully clearer -- centring splits the difference, which is
+    // the correct response to being squeezed.
+    if (l_near && r_near) {
+        /* both near: neither branch below fires anyway */
+    } else if (l_near && r_ok && (int16_t)r_cm - (int16_t)l_cm < WALL_EMERG_ASYMMETRY_CM) {
+        l_near = 0;
+    } else if (r_near && l_ok && (int16_t)l_cm - (int16_t)r_cm < WALL_EMERG_ASYMMETRY_CM) {
+        r_near = 0;
+    }
 
     // --- ACTIVE RECOVERY --------------------------------------------------
     // Mid-escape from a wall the ramped steer-away could not break contact
@@ -270,7 +306,16 @@ void Drive_Tick(int16_t gyro_rate) {
         if (s_emerg_side != 1) {
             s_emerg_side = 1;
             s_emerg_since = millis();
+            s_emerg_best_cm = l_cm;
             Debug_P("COLLISION COURSE: left wall too close, steering right\r\n");
+        }
+        // Steering is WORKING if the wall is receding. Restart the clock on
+        // real progress so recovery only fires when the distance refuses to
+        // improve -- the bare timer fired on slow-but-successful escapes too,
+        // and recovery destroys the robot's position in the corridor.
+        if ((int16_t)l_cm - (int16_t)s_emerg_best_cm >= WALL_STUCK_IMPROVE_CM) {
+            s_emerg_best_cm = l_cm;
+            s_emerg_since   = millis();
         }
 
         // The ramped steer-away below still drives BOTH wheels forward -- it
@@ -300,13 +345,13 @@ void Drive_Tick(int16_t gyro_rate) {
             int16_t sev = (int16_t)WALL_EMERGENCY_CM - (int16_t)l_cm + 1;
             if (sev < 1) sev = 1;
             if (sev > WALL_EMERGENCY_CM) sev = WALL_EMERGENCY_CM;
-            s_last_corr = (int16_t)(((int32_t)WALL_MAX_CORRECTION * sev) / WALL_EMERGENCY_CM);
+            s_last_corr = (int16_t)(((int32_t)max_corr * sev) / WALL_EMERGENCY_CM);
         }
         s_dbg.branch = BRANCH_EMERG_L;
         s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0;
         s_dbg.corr = s_last_corr;
-        s_dbg.pwm_l = (uint8_t)clamp16(DRIVE_BASE_PWM + s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
-        s_dbg.pwm_r = (uint8_t)clamp16(DRIVE_BASE_PWM - s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        s_dbg.pwm_l = (uint8_t)clamp16(base + s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        s_dbg.pwm_r = (uint8_t)clamp16(base - s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
         s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
         Motors_Forward(s_dbg.pwm_l, s_dbg.pwm_r);
         return;
@@ -315,7 +360,12 @@ void Drive_Tick(int16_t gyro_rate) {
         if (s_emerg_side != 2) {
             s_emerg_side = 2;
             s_emerg_since = millis();
+            s_emerg_best_cm = r_cm;
             Debug_P("COLLISION COURSE: right wall too close, steering left\r\n");
+        }
+        if ((int16_t)r_cm - (int16_t)s_emerg_best_cm >= WALL_STUCK_IMPROVE_CM) {
+            s_emerg_best_cm = r_cm;
+            s_emerg_since   = millis();
         }
 
         if ((millis() - s_emerg_since) > WALL_STUCK_MS) {
@@ -335,13 +385,13 @@ void Drive_Tick(int16_t gyro_rate) {
             int16_t sev = (int16_t)WALL_EMERGENCY_CM - (int16_t)r_cm + 1;
             if (sev < 1) sev = 1;
             if (sev > WALL_EMERGENCY_CM) sev = WALL_EMERGENCY_CM;
-            s_last_corr = -(int16_t)(((int32_t)WALL_MAX_CORRECTION * sev) / WALL_EMERGENCY_CM);
+            s_last_corr = -(int16_t)(((int32_t)max_corr * sev) / WALL_EMERGENCY_CM);
         }
         s_dbg.branch = BRANCH_EMERG_R;
         s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0;
         s_dbg.corr = s_last_corr;
-        s_dbg.pwm_l = (uint8_t)clamp16(DRIVE_BASE_PWM + s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
-        s_dbg.pwm_r = (uint8_t)clamp16(DRIVE_BASE_PWM - s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        s_dbg.pwm_l = (uint8_t)clamp16(base + s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        s_dbg.pwm_r = (uint8_t)clamp16(base - s_last_corr, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
         s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
         Motors_Forward(s_dbg.pwm_l, s_dbg.pwm_r);
         return;
@@ -352,8 +402,9 @@ void Drive_Tick(int16_t gyro_rate) {
     if (s_emerg_side != 0) {
         Debug_P("clear of wall, resuming normal centring\r\n");
     }
-    s_emerg_side  = 0;
-    s_emerg_since = 0;
+    s_emerg_side    = 0;
+    s_emerg_since   = 0;
+    s_emerg_best_cm = 0;
 
     // --- Mode selection ---------------------------------------------------
     if (l_ok && r_ok) {
@@ -377,6 +428,17 @@ void Drive_Tick(int16_t gyro_rate) {
     // --- PD controller ----------------------------------------------------
     // corr > 0 steers RIGHT.  Gyro convention: positive z = turning LEFT,
     // so a positive rate needs a positive (rightward) correction to oppose it.
+    //
+    // Deadband first. error_cm is a DIFFERENCE of two sonar readings, so 1 cm
+    // of quantisation on either side shows up as 2 here. Steering on that
+    // produces continuous micro-yaw, and every yaw walks the front beam off
+    // whatever lies ahead -- the mechanism behind both the phantom obstacles
+    // and the missed ones. Inside the band the wall term is dropped entirely
+    // and only gyro damping remains, so the robot tracks straight rather than
+    // hunting for a centre it is already at.
+    if (error_cm <= WALL_DEADBAND_CM && error_cm >= -WALL_DEADBAND_CM) {
+        error_cm = 0;
+    }
     corr = (int16_t)(((int32_t)WALL_KP_NUM * error_cm) / WALL_KP_DEN);
 
     // While rocking, apply the wall term at REDUCED gain rather than dropping
@@ -406,7 +468,7 @@ void Drive_Tick(int16_t gyro_rate) {
     if (corr > 0 && gyro_rate < -YAW_GOVERNOR_LSB) corr = 0;
     if (corr < 0 && gyro_rate >  YAW_GOVERNOR_LSB) corr = 0;
 
-    corr  = clamp16(corr, -WALL_MAX_CORRECTION, WALL_MAX_CORRECTION);
+    corr  = clamp16(corr, -max_corr, max_corr);
 
     s_dbg.error_cm = error_cm;
     s_dbg.corr     = corr;
@@ -415,8 +477,8 @@ void Drive_Tick(int16_t gyro_rate) {
 
     s_last_corr = corr;
     {
-        int16_t l = (int16_t)DRIVE_BASE_PWM + corr;
-        int16_t r = (int16_t)DRIVE_BASE_PWM - corr;
+        int16_t l = (int16_t)base + corr;
+        int16_t r = (int16_t)base - corr;
 
         // Preserve the differential when a wheel would fall under the stall
         // floor: lift both rather than clipping one, so the robot keeps
@@ -430,4 +492,13 @@ void Drive_Tick(int16_t gyro_rate) {
         s_dbg.pwm_r = (uint8_t)r;
         Motors_Forward((uint8_t)l, (uint8_t)r);
     }
+}
+
+void Drive_Tick(int16_t gyro_rate) {
+    tick_at(DRIVE_BASE_PWM, gyro_rate);
+}
+
+void Drive_TickAt(uint8_t base_pwm, int16_t gyro_rate) {
+    if (base_pwm < MOTOR_MIN_PWM) base_pwm = MOTOR_MIN_PWM;
+    tick_at(base_pwm, gyro_rate);
 }

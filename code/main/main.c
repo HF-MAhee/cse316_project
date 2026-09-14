@@ -119,6 +119,11 @@ static void telemetry_header(void) {
     Debug_P("# hdg10,L,F,R,Lopen,Ropen,Ltoo,Rtoo,Fblocked,Fvotes");
 #elif BUILD_MODE == 2 || BUILD_MODE == 5 || BUILD_MODE == 6
     Debug_P("# no periodic CSV in this mode -- event and summary lines only");
+#elif BUILD_MODE == 10
+    // The per-tick T stream below carries strictly more than the standard CSV
+    // and already runs at 36% of the byte budget. Printing both would drop
+    // bytes out of the middle of whichever line lost the race.
+    Debug_P("# no periodic CSV in this mode -- see the T trace below");
 #else
     Debug_P("# st,L,F,R,lok,rok,near,fv,md,br,err,wt,gt,corr,pwmL,pwmR,rock,rate,gx,gy,ovr,drop");
 #endif
@@ -193,6 +198,141 @@ static void telemetry(int16_t gyro_rate, int16_t gx, int16_t gy, uint16_t overru
 // ---------------------------------------------------------------------------
 //  Mode 10 helpers: dead-end turnaround
 // ---------------------------------------------------------------------------
+// Approach phases. The two-stage cruise/creep split is what makes the stop
+// distance independent of the (unmeasured, speed-dependent) coast.
+enum { DEP_WAIT = 0, DEP_CRUISE = 1, DEP_CREEP = 2 };
+
+// Per-tick approach trace. Deliberately CSV rather than prose: this is the
+// stream that has to be read numerically afterwards to tell a late stop from a
+// phantom obstacle from a centring fault. The prose goes in the event lines.
+//
+// Field meanings are in the legend printed by deadend_trace_header().
+static void deadend_trace(uint32_t t0, uint8_t phase, int16_t rate) {
+#if DEADEND_TRACE
+    static uint8_t decimate = 0;
+    const drive_debug_t *d = Drive_Debug();
+
+    if (++decimate < DEADEND_TRACE_EVERY) return;
+    decimate = 0;
+
+    Debug_P("T,");
+    Debug_CSV((int32_t)(millis() - t0));
+    Debug_CSV(phase);
+    Debug_CSV((int32_t)Sonar_Median(SONAR_LEFT));
+    Debug_CSV((int32_t)Sonar_Median(SONAR_FRONT));
+    Debug_CSV((int32_t)Sonar_Median(SONAR_RIGHT));
+    Debug_CSV((int32_t)Sonar_Latest(SONAR_FRONT));
+    Debug_CSV(d->l_ok);
+    Debug_CSV(d->r_ok);
+    Debug_CSV(Sonar_IsTooClose(SONAR_FRONT));
+    Debug_CSV(Sonar_IsTooClose(SONAR_LEFT) || Sonar_IsTooClose(SONAR_RIGHT));
+    Debug_CSV(Sonar_FrontVotesBelow(DEADEND_STOP_CM));
+    Debug_CSV(Sonar_FrontVotesBelow(DEADEND_SLOW_CM));
+    Debug_CSV((int32_t)Sonar_FrontGatedCount());
+    Debug_CSV(Drive_Mode());
+    Debug_CSV(d->branch);
+    Debug_CSV(d->error_cm);
+    Debug_CSV(d->wall_term);
+    Debug_CSV(d->gyro_term);
+    Debug_CSV(d->corr);
+    Debug_CSV(d->pwm_l);
+    Debug_CSV(d->pwm_r);
+    Debug_CSV(rate);
+    Debug_CSV((Heading_Raw() * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_Int(Debug_Dropped());
+    Debug_NL();
+#else
+    (void)t0; (void)phase; (void)rate;
+#endif
+}
+
+static void deadend_trace_header(void) {
+#if DEADEND_TRACE
+    Debug_P("# ---- MODE 10 approach trace ----------------------------\r\n");
+    Debug_Flush();
+    Debug_P("# T,ms,ph,L,F,R,Fraw,lok,rok,tcF,tcS,vStop,vSlow,gate,md,br,"
+            "err,wt,gt,corr,pL,pR,rate,hdg10,drop\r\n");
+    Debug_Flush();
+    Debug_P("#   ph   1=cruise 2=creep\r\n");
+    Debug_P("#   L,F,R   median cm;  Fraw  unfiltered front (999=no echo)\r\n");
+    Debug_P("#   lok,rok side reading trusted by the centring controller\r\n");
+    Debug_P("#   tcF,tcS front / either side closer than the sensor can"
+            " measure\r\n");
+    Debug_Flush();
+    Debug_P("#   vStop   front votes under DEADEND_STOP_CM (need ");
+    Debug_Int((int32_t)FRONT_VOTE_THRESHOLD);
+    Debug_P(" of ");
+    Debug_Int((int32_t)FRONT_VOTE_WINDOW);
+    Debug_P(")\r\n");
+    Debug_P("#   vSlow   same, under DEADEND_SLOW_CM -- triggers the creep\r\n");
+    Debug_Flush();
+    Debug_P("#   gate    front pings DISCARDED by the jump filter, cumulative."
+            "\r\n");
+    Debug_P("#           Each one costs 60 ms of detection delay, so a rising"
+            "\r\n");
+    Debug_P("#           gate during the approach is why a stop came late.\r\n");
+    Debug_Flush();
+    Debug_P("#   md      0=both walls 1=left only 2=right only 3=gyro only\r\n");
+    Debug_P("#   br      0=normal 1=rocking 2=emerg-L 3=emerg-R 4=recovering"
+            "\r\n");
+    Debug_P("#   err     R-L median difference, so TWICE the off-centre offset"
+            "\r\n");
+    Debug_P("#   wt,gt   wall (P) and gyro (D) contributions; corr = sum,"
+            " clamped\r\n");
+    Debug_Flush();
+    Debug_P("#   pL,pR   PWM actually written. When pR-pL stops equalling"
+            "\r\n");
+    Debug_P("#           2*corr the correction is being eaten by the PWM"
+            " limits\r\n");
+    Debug_P("#   rate    raw yaw LSB (65.5 per deg/s); hdg10 heading, 0.1 deg"
+            "\r\n");
+    Debug_P("#   drop    telemetry bytes lost. If this climbs, raise"
+            " DEADEND_TRACE_EVERY\r\n");
+    Debug_Flush();
+#endif
+}
+
+// Everything that shapes this run, so a log can be analysed later without
+// having to guess which build produced it. Modelled on Mode 5's header, which
+// proved its worth diagnosing the heading-hold D gain.
+static void deadend_config_header(void) {
+    Debug_P("# ---- MODE 10 dead-end turnaround -----------------------\r\n");
+    Debug_P("#   centre the corridor -> front obstacle -> 180 AWAY from the"
+            " nearer wall\r\n");
+    Debug_Flush();
+    Debug_KVF("# corridor", CORRIDOR_WIDTH_CM);
+    Debug_KVF("robot_w", ROBOT_WIDTH_CM);
+    Debug_KVF("side_gap", CORRIDOR_SIDE_GAP_CM);
+    Debug_KVF("emerg", WALL_EMERGENCY_CM);
+    Debug_NL();
+    Debug_Flush();
+    Debug_KVF("# base", DRIVE_BASE_PWM);
+    Debug_KVF("creep", DEADEND_CREEP_PWM);
+    Debug_KVF("slow_at", DEADEND_SLOW_CM);
+    Debug_KVF("stop_at", DEADEND_STOP_CM);
+    Debug_NL();
+    Debug_Flush();
+    Debug_KVF("# brake_pwm", DRIVE_BRAKE_PWM);
+    Debug_KVF("brake_ms", DRIVE_BRAKE_MS);
+    Debug_KVF("rev_trig", DEADEND_BACKUP_TRIGGER_CM);
+    Debug_KVF("rev_ms", DEADEND_BACKUP_MS);
+    Debug_NL();
+    Debug_Flush();
+    Debug_KVF("# pivot_side_need", PIVOT_SIDE_NEED_CM);
+    Debug_KVF("pivot_front_need", PIVOT_FRONT_NEED_CM);
+    Debug_KVF("decide_margin", DEADEND_DECIDE_MARGIN_CM);
+    Debug_NL();
+    Debug_Flush();
+    Debug_KVF("# deadband", WALL_DEADBAND_CM);
+    Debug_KVF("kp", WALL_KP_NUM);
+    Debug_KVF("/", WALL_KP_DEN);
+    Debug_KVF("kd", WALL_KD_NUM);
+    Debug_KVF("/", WALL_KD_DEN);
+    Debug_KVF("maxcorr", WALL_MAX_CORRECTION);
+    Debug_NL();
+    Debug_Flush();
+    deadend_trace_header();
+}
 // Give the filters a full set of fresh samples. Every reading in Mode 10 is
 // taken after either a coast or a reverse, so the history in the medians was
 // gathered somewhere the robot no longer is.
@@ -235,25 +375,29 @@ static void deadend_sequence(void) {
     Debug_Flush();
 
     // ---- where did it ACTUALLY stop? ------------------------------------
-    // Drive_Stop() has no active brake, so the chassis coasts past the point
-    // that triggered the stop. The trigger distance is therefore NOT the
-    // distance in front of the robot now, and only this reading is.
-    // The gap between DEADEND_STOP_CM and what prints here is the real coast
-    // at this speed -- the number to tune DEADEND_STOP_CM against.
+    // The stop was triggered at DEADEND_STOP_CM, then the creep speed and the
+    // active brake between them absorbed the momentum. Whatever difference
+    // remains between the two figures below is the RESIDUAL COAST -- the one
+    // number that says whether DRIVE_BRAKE_MS and DEADEND_CREEP_PWM are doing
+    // their job. It should now be small; if it is not, the brake pulse is too
+    // short or the creep too fast.
     Timer_WaitMs(GYRO_SETTLE_MS);
     Sonar_Flush();
     deadend_reprime(12);
     f_cm      = Sonar_Median(SONAR_FRONT);
     too_close = Sonar_IsTooClose(SONAR_FRONT);
     Debug_P("[1] stopped with ");
-    if (too_close) Debug_P("a wall too close to measure");
+    if (too_close) Debug_P("a wall TOO CLOSE to measure");
     else {
         Debug_Int((int32_t)f_cm);
         Debug_P(" cm");
     }
-    Debug_P(" ahead (triggered at ");
+    Debug_P(" ahead; asked to stop at ");
     Debug_Int((int32_t)DEADEND_STOP_CM);
-    Debug_P(" cm, so it coasted the difference)\r\n");
+    Debug_P(" cm, so residual coast = ");
+    if (too_close) Debug_P("MORE than the whole margin -- it hit the wall");
+    else           Debug_Int((int32_t)DEADEND_STOP_CM - (int32_t)f_cm);
+    Debug_P("\r\n");
     Debug_Flush();
 
     // ---- back out of the coast, ONLY if it needs to ----------------------
@@ -449,6 +593,9 @@ int main(void) {
 
     Maze_Init();
     telemetry_header();
+#if BUILD_MODE == 10
+    deadend_config_header();
+#endif
     next_tick = millis();
     run_start = millis();
 
@@ -902,41 +1049,109 @@ int main(void) {
         }
 #elif BUILD_MODE == 10
         {
-            static uint8_t  state      = 0;  // 0 idle, 1 approaching
-            static uint8_t  block_hits = 0;
+            static uint8_t  phase       = DEP_WAIT;
+            static uint8_t  block_hits  = 0;
             static uint32_t drive_start = 0;
+            static uint32_t want_stop_since = 0;  // 0 = not wanting to stop yet
+            uint8_t  stop_now  = 0;
+            uint8_t  tc_front  = Sonar_IsTooClose(SONAR_FRONT);
+            uint8_t  forced    = 0;
 
-            if (state == 0 && millis() - run_start > STARTUP_DELAY_MS) {
+            if (phase == DEP_WAIT && millis() - run_start > STARTUP_DELAY_MS) {
                 Drive_Begin();
                 drive_start = millis();      // time the DRIVE, not the boot
-                state = 1;
-                Debug_P("MODE10: driving the corridor, centring on both walls\r\n");
+                phase = DEP_CRUISE;
+                Debug_P("MODE10: [cruise] driving the corridor, centring on"
+                        " both walls\r\n");
             }
 
-            if (state == 1) {
-                // DEADEND_STOP_CM, not FRONT_BLOCKED_CM: this closes in much
-                // nearer than the junction classifier does, without changing
-                // what counts as a junction for Mode 3. Same vote window, so
-                // a yaw that swings the beam off the wall still cannot hide
-                // it. Debounced on top of that like Modes 1 and 7.
-                if (Sonar_FrontCloserThan(DEADEND_STOP_CM)) {
-                    if (block_hits < 255) block_hits++;
-                } else {
-                    block_hits = 0;
+            if (phase == DEP_CRUISE || phase == DEP_CREEP) {
+                // ---- stage 1 -> stage 2: slow down well before stopping ----
+                // Coast at cruise is larger than the whole stopping margin, so
+                // the last stretch has to be done slowly. This transition must
+                // happen further out than the CRUISE coast, hence the generous
+                // DEADEND_SLOW_CM.
+                if (phase == DEP_CRUISE &&
+                    Sonar_FrontCloserThan(DEADEND_SLOW_CM)) {
+                    phase = DEP_CREEP;
+                    Debug_P("MODE10: [creep] obstacle within ");
+                    Debug_Int((int32_t)DEADEND_SLOW_CM);
+                    Debug_P(" cm -- dropping to PWM ");
+                    Debug_Int((int32_t)DEADEND_CREEP_PWM);
+                    Debug_P(" so the coast is short\r\n");
                 }
 
-                if (block_hits >= FRONT_STOP_CONFIRM) {
-                    Drive_Stop();
-                    deadend_sequence();      // blocking, never returns
+                // ---- the stop decision ------------------------------------
+                // A too-close front bypasses everything below: the wall is
+                // nearer than the sensor can even measure, so there is nothing
+                // left to confirm or wait for.
+                if (tc_front) {
+                    stop_now = 1;
+                    forced   = 1;
+                    Debug_P("MODE10: front TOO CLOSE to measure -- emergency"
+                            " stop, no confirmation wait\r\n");
+                } else {
+                    // DEADEND_STOP_CM, not FRONT_BLOCKED_CM: this closes in
+                    // much nearer than the junction classifier does, without
+                    // changing what counts as a junction for Mode 3. Same vote
+                    // window, so a yaw that swings the beam off the wall still
+                    // cannot hide it. Debounced on top of that.
+                    if (Sonar_FrontCloserThan(DEADEND_STOP_CM)) {
+                        if (block_hits < 255) block_hits++;
+                    } else {
+                        block_hits = 0;
+                    }
+
+                    if (block_hits >= FRONT_STOP_CONFIRM) {
+                        // ---- straightness gate ----------------------------
+                        // While the chassis is yawing the front beam can be
+                        // ranging a SIDE wall, and stopping on that reading
+                        // invents a dead end in the middle of a clear
+                        // corridor. Wait for a straight moment -- but not
+                        // forever, or a delayed stop becomes a collision.
+                        int16_t ar = (rate < 0) ? (int16_t)-rate : rate;
+                        if (want_stop_since == 0) {
+                            want_stop_since = millis();
+                            Debug_P("MODE10: front inside ");
+                            Debug_Int((int32_t)DEADEND_STOP_CM);
+                            Debug_P(" cm -- confirming while straight\r\n");
+                        }
+                        if (ar < DEADEND_STRAIGHT_LSB) {
+                            stop_now = 1;
+                        } else if ((millis() - want_stop_since) >
+                                   DEADEND_STRAIGHT_MAX_MS) {
+                            stop_now = 1;
+                            forced   = 1;
+                            Debug_P("MODE10: still yawing after ");
+                            Debug_Int((int32_t)DEADEND_STRAIGHT_MAX_MS);
+                            Debug_P(" ms -- taking the stop anyway. The front"
+                                    " reading may be a side wall.\r\n");
+                        }
+                    } else {
+                        want_stop_since = 0;
+                    }
+                }
+
+                if (stop_now) {
+                    Debug_P("MODE10: STOPPING (");
+                    if (forced) Debug_P("forced");
+                    else        Debug_P("straight and confirmed");
+                    Debug_P(")\r\n");
+                    deadend_trace(drive_start, phase, rate);
+                    Drive_Stop();               // brakes, then releases
+                    deadend_sequence();         // blocking, never returns
                 } else if ((millis() - drive_start) > DEADEND_APPROACH_MAX_MS) {
                     Drive_Stop();
-                    Debug_P("MODE10: no dead end found within the time limit\r\n");
+                    Debug_P("MODE10: no dead end found within the time"
+                            " limit\r\n");
                     Debug_P("MODE10 ABORTED\r\n");
                     Debug_Flush();
                     Motors_Stop();
                     for (;;) { }
                 } else {
-                    Drive_Tick(rate);
+                    if (phase == DEP_CREEP) Drive_TickAt(DEADEND_CREEP_PWM, rate);
+                    else                    Drive_Tick(rate);
+                    deadend_trace(drive_start, phase, rate);
                 }
             }
         }
@@ -953,6 +1168,11 @@ int main(void) {
 
 #if BUILD_MODE == 4
         telemetry_sonar_test();
+#elif BUILD_MODE == 10
+        // Mode 10 traces every tick itself, right after the control decision
+        // it describes. A second periodic stream here would both duplicate it
+        // and blow the byte budget.
+        (void)g;
 #else
         telemetry(rate, g.x, g.y, overruns);
 #endif

@@ -36,7 +36,21 @@ typedef struct {
 const drive_debug_t *Drive_Debug(void);
 
 void          Drive_Begin(void);            // kickstart + reset controller
-void          Drive_Tick(int16_t gyro_rate);// one control step
+void          Drive_Tick(int16_t gyro_rate);// one control step at DRIVE_BASE_PWM
+
+// Same control step at a caller-chosen base speed, for an approach that has to
+// slow down before stopping. The steering differential is a RATIO of the base
+// (WALL_MAX_CORRECTION_RATIO_PCT), so a slower base also steers more gently
+// instead of pivoting on the spot. Clamped up to MOTOR_MIN_PWM -- below the
+// stall floor the wheels stop rather than creep.
+void          Drive_TickAt(uint8_t base_pwm, int16_t gyro_rate);
+
+// Stops the chassis AND brakes it: a DRIVE_BRAKE_MS reverse pulse before the
+// motors are released, because an unbraked coast was measured at ~17 cm and
+// that is enough to put the nose into a wall the controller correctly decided
+// to stop short of. Blocks for DRIVE_BRAKE_MS, so it will overrun one control
+// tick -- harmless, since the robot is stopping and has no decision left to
+// make this tick. Set DRIVE_BRAKE_MS to 0 to go back to a bare coast.
 void          Drive_Stop(void);
 
 // BLOCKING straight drive for a fixed duration, held on the gyro alone (no
