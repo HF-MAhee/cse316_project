@@ -83,6 +83,23 @@ static void pulse_tracked(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_m
     while ((millis() - t0) < ms) turn_sample(next_ms);
 }
 
+// Same, but ramps up to pwm across the pulse instead of stepping to it.
+// Used ONLY for the kick. A pivot kick is the single largest current transient
+// the firmware asks for -- both motors stalled, driven in opposite directions,
+// no back-EMF -- and every failed run in the Mode 10 logs reset at exactly
+// this point with the brown-out flag set. Spreading the same impulse over
+// TURN_KICK_MS roughly halves the peak draw.
+static void pulse_ramped(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_ms) {
+    uint32_t t0 = millis();
+    uint32_t el;
+    Motors_Pivot(cw, MOTOR_MIN_PWM);
+    while ((el = millis() - t0) < ms) {
+        Motors_Pivot(cw, (uint8_t)(MOTOR_MIN_PWM +
+            (((uint32_t)(pwm - MOTOR_MIN_PWM) * el) / ms)));
+        turn_sample(next_ms);
+    }
+}
+
 // Motors off, but keep integrating: the chassis coasts after power is cut and
 // that coast is real rotation.
 static void settle_tracked(uint16_t ms, uint32_t *next_ms) {
@@ -117,7 +134,11 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     // A pivot skids the tyres sideways, so it needs more breakaway torque
     // than rolling straight. Counted, because with the wheels turning in
     // opposite directions this kick is real rotation.
+#if KICK_RAMP
+    pulse_ramped(cw, TURN_KICK_PWM, TURN_KICK_MS, &next_ms);
+#else
     pulse_tracked(cw, TURN_KICK_PWM, TURN_KICK_MS, &next_ms);
+#endif
     turn_trace("kick");
 
     // --- PHASE 2: slow sweep, stopping early on purpose -------------------

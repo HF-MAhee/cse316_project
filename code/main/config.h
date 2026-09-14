@@ -56,9 +56,19 @@
 #define SONAR_TO_AXLE_CM       15   // measured
 
 // Cruise speed in cm/s at DRIVE_BASE_PWM. With no working encoders, every
-// distance in this project is (time x speed), so this must be measured:
-// drive a timed 100 cm run and divide.
-#define TRAVEL_SPEED_CMS       20   // [MEASURE]
+// distance in this project is (time x speed), so this must be measured.
+//
+// NOW MEASURED, from the Mode 10 front-range traces rather than a stopwatch.
+// Over the steady part of the cruise phase the front range closed at 28 cm/s
+// on two runs (log3: 51->33 cm in 0.65 s; log4: 56->32 cm in 0.85 s). The old
+// placeholder of 20 was low by 50%, which made every time-based distance in
+// Mode 3 -- APPROACH_TIME_MS above all -- overshoot by half as much again.
+//
+// Caveat worth keeping in mind: late in a run the same measurement gives
+// 41-46 cm/s. That is the chassis still accelerating, not a second speed, so
+// 30 is the conservative figure for a leg that starts from rest. Re-measure
+// over a long straight leg if Mode 3 distances still run long.
+#define TRAVEL_SPEED_CMS       30   // measured from Mode 10 traces
 
 // ---------------------------------------------------------------------------
 //  3. MAZE GEOMETRY                       [MATCH TO YOUR BUILT MAZE]
@@ -82,6 +92,25 @@
 // about "how near is too near" has to be smaller than this, or the robot is
 // in a fault state while doing nothing wrong. See WALL_EMERGENCY_CM.
 #define CORRIDOR_SIDE_GAP_CM   ((CORRIDOR_WIDTH_CM - ROBOT_WIDTH_CM) / 2)
+
+// What a side sonar ACTUALLY READS when the robot is centred.
+//
+// This is deliberately NOT CORRIDOR_HALF_CM, and the logs are why. Across all
+// four Mode 10 runs the two side readings summed to 28-31 cm, while the
+// geometry above predicts CORRIDOR_WIDTH_CM - ROBOT_WIDTH_CM = 24. The extra
+// ~5 cm is real and repeatable: the sensor faces sit inboard of the widest
+// part of the chassis, so each one reads a few cm more than the true gap.
+//
+// It does not matter while both walls are visible -- that mode steers on the
+// DIFFERENCE, which cancels the offset. It matters a great deal the moment one
+// wall disappears, because CENTER_LEFT_ONLY / CENTER_RIGHT_ONLY steer toward
+// an absolute target: aiming at CORRIDOR_HALF_CM (20) when centred actually
+// reads ~14.5 would drive the robot 5 cm off-centre on purpose, every time it
+// passed an opening.
+//
+// Re-measure by parking the robot centred in the corridor and halving the
+// logged L+R.
+#define SIDE_CENTRED_CM        15
 
 // ---------------------------------------------------------------------------
 //  4. TIMING
@@ -359,6 +388,40 @@
 // against that, not by eye.
 #define DRIVE_BRAKE_PWM         100
 #define DRIVE_BRAKE_MS          80
+
+// Below this base speed, do NOT lift both wheels to keep a wheel off the stall
+// floor -- clamp the correction instead, so the MEAN speed stays what was
+// asked for.
+//
+// The lift exists to preserve the steering differential, and at cruise that is
+// the right trade. At creep it inverts the whole point of creeping: with
+// MOTOR_MIN_PWM at 45, a base of 48 left 3 counts of headroom, so nearly every
+// correction triggered a lift and the logged mean came back to 50-62 -- cruise
+// speed under a "creep" label. Measured means were 50.6, 52.8 and 56.2 against
+// a nominal 48. Below this threshold, steering authority yields to speed
+// control; the robot is close to the obstacle and moving slowly, so arriving
+// at the right SPEED matters more than shaving the last degree off centring.
+#define DRIVE_MEAN_PRESERVE_BELOW  58
+
+// KICK RAMP -- brownout mitigation.
+//
+// Every failed run in the four Mode 10 logs died at a PWM-120 kick, and none
+// died anywhere else:
+//   log2  t=103 ms, just after Drive_Begin()'s KICK_PWM kick
+//   log3  immediately after the first pivot's TURN_KICK_PWM kick
+//   log4  immediately after the SECOND pivot's kick
+//   log1  boot #1, freshest battery, survived the whole run
+// Every one reported BORF with SRAM intact: the rail dipped below the
+// brown-out threshold and recovered, rather than a broken connection.
+//
+// Stepping 0 -> 120 in one PWM period is the largest current transient the
+// firmware ever asks for: the motor is stalled, so it draws locked-rotor
+// current with no back-EMF to oppose it. Ramping over the kick spreads that
+// same impulse over KICK_MS and roughly halves the peak.
+//
+// THIS IS MITIGATION, NOT A CURE. The root cause is supply, not firmware --
+// see the analysis notes. Set to 0 to restore the old instant step.
+#define KICK_RAMP              1
 
 // YAW GOVERNOR.
 // Hard ceiling on how fast the chassis may rotate while centring. Beyond
@@ -681,9 +744,23 @@
 // Sonar_FrontCloserThan() so it keeps the same vote-window robustness.
 //
 // TUNING: this is the distance the stop is TRIGGERED at, not where the
-// chassis ends up. The [1] line of the run log prints the real post-stop
-// distance; the gap between the two is the residual coast.
-#define DEADEND_STOP_CM        12
+// chassis ends up.
+//
+// MEASURED at 12: the chassis came to rest 3-4 cm from the wall on three runs.
+// That 8-9 cm total splits into two very different halves, and the log line
+// used to blame the wrong one:
+//
+//   ~6 cm  DETECTION LAG. Front pings are 60 ms apart and the vote needs 2 of
+//          them, so at the measured 40+ cm/s the front range falls ~6 cm
+//          between "first reading under the threshold" and "stop fires".
+//          Logs show Fraw 12 -> 9 -> 6 across those pings.
+//   ~2-3cm BRAKE COAST, from the stop command to standstill. The active brake
+//          is doing its job; this half is already small.
+//
+// So the threshold has to cover the lag as well as the coast. 20 puts the nose
+// at ~11 cm, clear of DEADEND_BACKUP_TRIGGER_CM so no reverse is needed at all
+// on a normal stop.
+#define DEADEND_STOP_CM        20
 
 // TWO-STAGE APPROACH -- this is what actually prevents hitting the wall, and
 // why DEADEND_STOP_CM no longer has to be guessed against an unknown coast.
@@ -703,8 +780,20 @@
 // DEADEND_SLOW_CM must be comfortably larger than the CRUISE coast, since
 // that is the distance this transition has to happen within. It costs nothing
 // to be generous here -- the penalty is only a slower last 20 cm.
-#define DEADEND_SLOW_CM        35
-#define DEADEND_CREEP_PWM      48   // above MOTOR_MIN_PWM, below cruise
+// MEASURED FROM LOGS 1/3/4, not estimated. The creep only lasted ~0.5 s at 35
+// cm, which is not enough distance for the chassis to actually shed speed --
+// the front range closed at 41-46 cm/s during "creep", the same as cruise.
+// Starting it at 45 cm gives ~1.5 s for the deceleration to take effect.
+#define DEADEND_SLOW_CM        45
+
+// Raised 48 -> 52. At 48 the floor-preservation in tick_at() had almost
+// nothing to work with: MOTOR_MIN_PWM is 45, so any correction over 3 counts
+// pushed a wheel under the floor and BOTH were lifted, taking the mean back up
+// to 56-62 -- i.e. cruise speed. Logged effective means were 50.6 / 52.8 /
+// 56.2 against a nominal 48. At 52 there are 7 counts of headroom, and the
+// correction is clamped to that (see DRIVE_MEAN_PRESERVE_BELOW) so the mean
+// stays where it was asked to be.
+#define DEADEND_CREEP_PWM      52
 
 // Do not accept a dead-end stop while the chassis is yawing faster than this:
 // off-axis the front beam can be ranging a SIDE wall, and stopping on that
@@ -752,7 +841,24 @@
 // reading at which a front corner exactly grazes the wall.
 #define DEADEND_BACKUP_TRIGGER_CM 8
 #define DEADEND_BACKUP_PWM     90
-#define DEADEND_BACKUP_MS      400
+
+// The reverse is CLOSED-LOOP now: it backs off until the front sensor reads
+// DEADEND_BACKUP_TARGET_CM, watching as it goes, instead of running a fixed
+// time and hoping.
+//
+// WHY: the fixed 400 ms pulse moved the chassis a MEASURED 20-22 cm on all
+// three runs that used it (front went 3 -> 24, 3 -> 25, 4 -> 24 cm). That is
+// ~52 cm/s in reverse, against a pivot that only needs about 6 cm of room --
+// so it threw away most of a corridor width every time, and in a real maze
+// would reverse straight into whatever was behind it. No fixed duration is
+// safe here when the speed is this poorly known; the sensor already knows the
+// answer, so use it.
+//
+// DEADEND_BACKUP_MAX_MS only bounds the loop if the sensor never reports the
+// target (a wall behind, a dead sensor). At the measured reverse speed it
+// corresponds to ~15 cm, so it cannot run away.
+#define DEADEND_BACKUP_TARGET_CM 12
+#define DEADEND_BACKUP_MAX_MS    300
 
 // Ceiling on the approach so a mode-10 run in open space ends rather than
 // driving off forever.

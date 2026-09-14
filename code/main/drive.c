@@ -34,8 +34,24 @@ void Drive_Begin(void) {
     Heading_Reset();
 
     // Breakaway kick: the motors will not start from rest at cruise PWM.
+    // RAMPED rather than stepped -- a 0 -> KICK_PWM step draws locked-rotor
+    // current with no back-EMF opposing it, and every failed run in the Mode 10
+    // logs browned out at exactly such a kick. Same impulse, spread over
+    // KICK_MS, roughly half the peak.
+#if KICK_RAMP
+    {
+        uint32_t t0 = millis();
+        uint32_t el;
+        while ((el = millis() - t0) < KICK_MS) {
+            uint8_t p = (uint8_t)(MOTOR_MIN_PWM +
+                (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * el) / KICK_MS));
+            Motors_Forward(p, p);
+        }
+    }
+#else
     Motors_Forward(KICK_PWM, KICK_PWM);
     Timer_WaitMs(KICK_MS);
+#endif
 }
 
 void Drive_Stop(void) {
@@ -108,8 +124,19 @@ static int32_t straight_hold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw,
     // Breakaway kick. Tracked, unlike Drive_Begin()'s -- both wheels forward
     // together barely yaws the chassis, but counting it costs nothing and
     // keeps the leg's heading frame honest from the first millisecond.
+    // Ramped for the same brownout reason as Drive_Begin()'s.
+#if KICK_RAMP
+    Motors_Forward(MOTOR_MIN_PWM, MOTOR_MIN_PWM);
+    while ((millis() - t0) < KICK_MS) {
+        uint8_t p = (uint8_t)(MOTOR_MIN_PWM +
+            (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * (millis() - t0)) / KICK_MS));
+        Motors_Forward(p, p);
+        hold_sample(&next_ms);
+    }
+#else
     Motors_Forward(KICK_PWM, KICK_PWM);
     while ((millis() - t0) < KICK_MS) hold_sample(&next_ms);
+#endif
 
     while ((millis() - t0) < ms) {
         int16_t rate = hold_sample(&next_ms);
@@ -243,6 +270,19 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
     // spinning on the spot. At base == DRIVE_BASE_PWM this is exactly the old
     // WALL_MAX_CORRECTION.
     int16_t max_corr = (int16_t)(((int32_t)base * WALL_MAX_CORRECTION_RATIO_PCT) / 100);
+
+    // At a low base speed the floor-preservation below (lift BOTH wheels rather
+    // than clip one) quietly cancels the speed reduction: with the floor at
+    // MOTOR_MIN_PWM there is very little room under the base, so almost every
+    // correction triggers a lift and the mean climbs back to cruise. Measured
+    // in three Mode 10 logs: nominal creep 48, actual mean 50.6 / 52.8 / 56.2,
+    // peaking at 62. Clamping the correction to the available headroom instead
+    // means no lift is ever needed and the mean is honest.
+    if (base < DRIVE_MEAN_PRESERVE_BELOW) {
+        int16_t room = (int16_t)base - (int16_t)MOTOR_MIN_PWM;
+        if (room < 0) room = 0;
+        if (max_corr > room) max_corr = room;
+    }
 
     // A one-sided emergency is only meaningful when the other side actually
     // has room to steer into. In a corridor barely wider than the chassis both
@@ -415,11 +455,15 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
         error_cm = (int16_t)Sonar_Median(SONAR_RIGHT) - (int16_t)Sonar_Median(SONAR_LEFT);
     } else if (l_ok) {
         s_mode = CENTER_LEFT_ONLY;
-        // Only here does the absolute corridor width matter.
-        error_cm = (int16_t)CORRIDOR_HALF_CM - (int16_t)Sonar_Median(SONAR_LEFT);
+        // Only here does an ABSOLUTE target matter -- and it has to be what a
+        // side sonar really reads when centred, not the corridor half-width.
+        // Measured L+R was 28-31 cm where the geometry predicts 24, because the
+        // sensor faces sit inboard of the chassis edge. Steering at
+        // CORRIDOR_HALF_CM would drive the robot ~5 cm off-centre on purpose.
+        error_cm = (int16_t)SIDE_CENTRED_CM - (int16_t)Sonar_Median(SONAR_LEFT);
     } else if (r_ok) {
         s_mode = CENTER_RIGHT_ONLY;
-        error_cm = (int16_t)Sonar_Median(SONAR_RIGHT) - (int16_t)CORRIDOR_HALF_CM;
+        error_cm = (int16_t)Sonar_Median(SONAR_RIGHT) - (int16_t)SIDE_CENTRED_CM;
     } else {
         s_mode = CENTER_GYRO_ONLY;
         error_cm = 0;

@@ -315,7 +315,8 @@ static void deadend_config_header(void) {
     Debug_KVF("# brake_pwm", DRIVE_BRAKE_PWM);
     Debug_KVF("brake_ms", DRIVE_BRAKE_MS);
     Debug_KVF("rev_trig", DEADEND_BACKUP_TRIGGER_CM);
-    Debug_KVF("rev_ms", DEADEND_BACKUP_MS);
+    Debug_KVF("rev_target", DEADEND_BACKUP_TARGET_CM);
+    Debug_KVF("rev_max_ms", DEADEND_BACKUP_MAX_MS);
     Debug_NL();
     Debug_Flush();
     Debug_KVF("# pivot_side_need", PIVOT_SIDE_NEED_CM);
@@ -394,10 +395,19 @@ static void deadend_sequence(void) {
     }
     Debug_P(" ahead; asked to stop at ");
     Debug_Int((int32_t)DEADEND_STOP_CM);
-    Debug_P(" cm, so residual coast = ");
+    Debug_P(" cm, total stopping distance = ");
     if (too_close) Debug_P("MORE than the whole margin -- it hit the wall");
     else           Debug_Int((int32_t)DEADEND_STOP_CM - (int32_t)f_cm);
     Debug_P("\r\n");
+    // That total is NOT all coast, and reading it as coast sends you tuning
+    // the wrong constant. It is detection lag plus brake coast. The lag is the
+    // front range that goes by between the first ping under the threshold and
+    // the second vote landing -- 2 refreshes at 60 ms, so it scales with speed
+    // -- and is visible directly in the T trace as the Fraw steps just before
+    // STOPPING. Measured at DEADEND_STOP_CM=12: ~6 cm lag, ~2-3 cm coast.
+    Debug_P("    (= detection lag + brake coast. Read the last Fraw values in\r\n");
+    Debug_P("     the T trace above: the drop from the threshold to the final\r\n");
+    Debug_P("     one is the LAG; only the rest is the brake.)\r\n");
     Debug_Flush();
 
     // ---- back out of the coast, ONLY if it needs to ----------------------
@@ -409,20 +419,47 @@ static void deadend_sequence(void) {
     // A too-close front always reverses: the sensor cannot say how bad it is.
     backed_up = 0;
     if (too_close || f_cm < DEADEND_BACKUP_TRIGGER_CM) {
-        Debug_P("[2] too close to pivot (want ");
-        Debug_Int((int32_t)DEADEND_BACKUP_TRIGGER_CM);
-        Debug_P("+ cm) -- backing off ");
-        Debug_Int((int32_t)DEADEND_BACKUP_MS);
-        Debug_P(" ms\r\n");
+        uint32_t t0 = millis();
+        uint8_t  reached = 0;
+
+        Debug_P("[2] too close to pivot -- reversing until the front reads ");
+        Debug_Int((int32_t)DEADEND_BACKUP_TARGET_CM);
+        Debug_P(" cm\r\n");
         Debug_Flush();
+
+        // CLOSED LOOP, watching the sensor as it goes. The old fixed 400 ms
+        // pulse moved the chassis a measured 20-22 cm for a pivot that needs
+        // about 6 -- most of a corridor width thrown away, and a reverse
+        // collision waiting to happen in a real maze.
         Motors_SetLeft(DIR_REV, DEADEND_BACKUP_PWM);
         Motors_SetRight(DIR_REV, DEADEND_BACKUP_PWM);
-        Timer_WaitMs(DEADEND_BACKUP_MS);
+        while ((millis() - t0) < DEADEND_BACKUP_MAX_MS) {
+            Sonar_Task();
+            if (!Sonar_IsTooClose(SONAR_FRONT) &&
+                Sonar_Latest(SONAR_FRONT) != SONAR_NO_ECHO &&
+                Sonar_Latest(SONAR_FRONT) >= DEADEND_BACKUP_TARGET_CM) {
+                reached = 1;
+                break;
+            }
+            Timer_WaitMs(CONTROL_TICK_MS);
+        }
         Motors_Stop();
         Timer_WaitMs(GYRO_SETTLE_MS);
         backed_up = 1;
+
+        Debug_P("    reversed ");
+        Debug_Int((int32_t)(millis() - t0));
+        Debug_P(" ms, ");
+        if (reached) Debug_P("target reached\r\n");
+        else         Debug_P("HIT THE TIME LIMIT -- sensor never reported the"
+                             " target. Check for a wall behind.\r\n");
+        Debug_Flush();
     } else {
-        Debug_P("[2] enough room ahead already -- no reverse needed\r\n");
+        Debug_P("[2] enough room ahead already (");
+        Debug_Int((int32_t)f_cm);
+        Debug_P(" cm, want ");
+        Debug_Int((int32_t)DEADEND_BACKUP_TRIGGER_CM);
+        Debug_P("+) -- no reverse needed\r\n");
         Debug_Flush();
     }
 
@@ -563,11 +600,26 @@ int main(void) {
     uint32_t next_tick;
     uint32_t run_start;
 
+    // MOTORS OFF FIRST -- before the UART, the timer, anything.
+    //
+    // A reset does NOT stop the motors. It makes every port pin a high-Z input,
+    // so the L298N's direction inputs float and its last commanded state can
+    // persist: the chassis keeps driving, or keeps pivoting, until firmware
+    // takes the pins back. That is the "kept rotating after the turn" and "kept
+    // rotating 360" symptom in the Mode 10 logs -- the MCU browned out mid-
+    // pivot and the motors simply carried on.
+    //
+    // This used to run after Debug_Init/Timer_Init/I2C_Init, which is
+    // milliseconds of unguided motion per reset, and much worse in a repeated
+    // brown-out loop where the code may never reach the old position at all.
+    // Nothing here depends on any other subsystem, so it costs nothing to make
+    // it the first thing that happens.
+    Motors_Init();
+    Motors_Stop();
+
     Debug_Init();
     Timer_Init();          // before sei() so millis() is live immediately
     I2C_Init();
-    Motors_Init();
-    Motors_Stop();
     Sonar_Init();
     sei();
 
