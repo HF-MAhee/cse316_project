@@ -31,6 +31,53 @@
 //  keep running, so POWER_MIN_SAFE_MV is a real limit, not a preference.
 // ============================================================================
 
+// ----------------------------------------------------------------------------
+//  CRASH FORENSICS -- what the rail was doing when the MCU died.
+//
+//  The running minimum above lives in ordinary RAM, so a reset wipes it and the
+//  most interesting reading in the whole run -- the last one before the CPU
+//  stopped executing -- is exactly the one that gets lost. These copies live in
+//  .noinit, so they survive the reset and can be reported on the next boot.
+//
+//  This is the measurement that separates the two candidate faults, which need
+//  completely different fixes:
+//
+//    Rail declined progressively, last reading 4.0-4.5 V
+//        -> genuine SAG under load. The supply cannot hold up against motor
+//           current: decoupling, bulk capacitance, wiring resistance.
+//
+//    Rail was still healthy (4.8-5.0 V) at the last sample, then gone
+//        -> abrupt COLLAPSE, not sag. The regulator shut off (over-current
+//           hiccup, thermal, or two regulators fighting) or a connection
+//           momentarily opened. No amount of capacitance fixes that.
+//
+//  The activity code says WHICH operation was running, so the answer is not
+//  "somewhere in the run" but "during the pivot kick".
+// ----------------------------------------------------------------------------
+#define ACT_UNKNOWN      0xFF
+#define ACT_IDLE         0
+#define ACT_DRIVE_KICK   1
+#define ACT_DRIVING      2
+#define ACT_DRIVE_BRAKE  3
+#define ACT_TURN_KICK    4
+#define ACT_TURN_SWEEP   5
+#define ACT_TURN_BRAKE   6
+#define ACT_TURN_NUDGE   7
+#define ACT_REVERSING    8
+
+// Record what is happening now. Cheap (one byte to .noinit), so it can be
+// called at every phase boundary without thought.
+void     Power_SetActivity(uint8_t act);
+
+// Readings recovered from BEFORE the last reset. Valid only when
+// Power_CrashValid() is 1 -- i.e. SRAM held its contents, so a true power cycle
+// reports nothing rather than garbage.
+uint8_t  Power_CrashValid(void);
+uint16_t Power_CrashMinMv(void);
+uint8_t  Power_CrashActivity(void);
+
+// Must run before report_reset_cause(): it recovers the pre-reset values and
+// then re-arms the .noinit copies for this run.
 void     Power_Init(void);
 
 // One fresh reading of the supply rail, in millivolts. Blocking, ~0.5 ms

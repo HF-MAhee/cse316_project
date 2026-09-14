@@ -142,6 +142,51 @@ static void report_reset_cause(void) {
         Debug_P("  converter dropping out. Note the boot# restarting at 1\r\n");
         Debug_P("  every time is itself the evidence.\r\n");
     }
+    // ---- what the rail was doing when the MCU died -----------------------
+    // This is the measurement that separates the two candidate faults, and they
+    // need opposite fixes. See the commentary in power.h.
+    if (Power_CrashValid() && Power_CrashMinMv() > 0) {
+        uint16_t mn = Power_CrashMinMv();
+        Debug_P("  BEFORE THE RESET: lowest rail seen was ");
+        Debug_Int((int32_t)mn);
+        Debug_P(" mV, during ");
+        switch (Power_CrashActivity()) {
+            case ACT_IDLE:        Debug_P("idle (motors off)");    break;
+            case ACT_DRIVE_KICK:  Debug_P("the DRIVE KICK");       break;
+            case ACT_DRIVING:     Debug_P("normal driving");       break;
+            case ACT_DRIVE_BRAKE: Debug_P("the DRIVE BRAKE");      break;
+            case ACT_TURN_KICK:   Debug_P("the PIVOT KICK");       break;
+            case ACT_TURN_SWEEP:  Debug_P("the pivot sweep");      break;
+            case ACT_TURN_BRAKE:  Debug_P("the pivot brake");      break;
+            case ACT_TURN_NUDGE:  Debug_P("a pivot nudge");        break;
+            case ACT_REVERSING:   Debug_P("the reverse");          break;
+            default:              Debug_P("an unknown phase");     break;
+        }
+        Debug_NL();
+        Debug_Flush();
+
+        // The interpretation, spelled out, because the two cases look identical
+        // in the MCUCSR flags and are fixed by completely different work.
+        if (mn < POWER_MIN_SAFE_MV) {
+            Debug_P("  -> The rail was ALREADY SAGGING before it died, so this"
+                    " is a\r\n");
+            Debug_P("     current-delivery problem: capacitance, wire"
+                    " resistance,\r\n");
+            Debug_P("     connector resistance, shared ground return.\r\n");
+        } else {
+            Debug_P("  -> The rail was STILL HEALTHY at the last sample, then"
+                    " gone.\r\n");
+            Debug_P("     That is an ABRUPT COLLAPSE, not a sag: a regulator"
+                    " shutting\r\n");
+            Debug_P("     off (over-current hiccup / thermal / two regulators"
+                    "\r\n");
+            Debug_P("     fighting) or a connection momentarily opening. Adding"
+                    "\r\n");
+            Debug_P("     capacitors will NOT fix this one.\r\n");
+        }
+        Debug_Flush();
+    }
+
     Debug_Flush();
     s_prev_flags = f;
 }
@@ -479,6 +524,7 @@ static void deadend_sequence(void) {
         // pulse moved the chassis a measured 20-22 cm for a pivot that needs
         // about 6 -- most of a corridor width thrown away, and a reverse
         // collision waiting to happen in a real maze.
+        Power_SetActivity(ACT_REVERSING);
         Motors_SetLeft(DIR_REV, DEADEND_BACKUP_PWM);
         Motors_SetRight(DIR_REV, DEADEND_BACKUP_PWM);
         while ((millis() - t0) < DEADEND_BACKUP_MAX_MS) {

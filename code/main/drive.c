@@ -39,6 +39,7 @@ void Drive_Begin(void) {
     // current with no back-EMF opposing it, and every failed run in the Mode 10
     // logs browned out at exactly such a kick. Same impulse, spread over
     // KICK_MS, roughly half the peak.
+    Power_SetActivity(ACT_DRIVE_KICK);
 #if KICK_RAMP
     {
         uint32_t t0 = millis();
@@ -58,9 +59,11 @@ void Drive_Begin(void) {
     Motors_Forward(KICK_PWM, KICK_PWM);
     Timer_WaitMs(KICK_MS);
 #endif
+    Power_SetActivity(ACT_DRIVING);
 }
 
 void Drive_Stop(void) {
+    Power_SetActivity(ACT_DRIVE_BRAKE);
 #if DRIVE_BRAKE_MS > 0
     // ACTIVE BRAKE. Cutting the motors alone leaves the chassis coasting --
     // around 17 cm was observed, enough to put the nose into a wall the
@@ -76,6 +79,7 @@ void Drive_Stop(void) {
     Timer_WaitMs(DRIVE_BRAKE_MS);
 #endif
     Motors_Stop();
+    Power_SetActivity(ACT_IDLE);
     s_last_corr = 0;
     // Clear the diagnostic snapshot too. Drive_Tick() stops being called once
     // the caller halts, so without this the telemetry keeps reporting the last

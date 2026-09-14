@@ -139,6 +139,7 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     // A pivot skids the tyres sideways, so it needs more breakaway torque
     // than rolling straight. Counted, because with the wheels turning in
     // opposite directions this kick is real rotation.
+    Power_SetActivity(ACT_TURN_KICK);
 #if KICK_RAMP
     pulse_ramped(cw, TURN_KICK_PWM, TURN_KICK_MS, &next_ms);
 #else
@@ -147,6 +148,7 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     turn_trace("kick");
 
     // --- PHASE 2: slow sweep, stopping early on purpose -------------------
+    Power_SetActivity(ACT_TURN_SWEEP);
     Motors_Pivot(cw, TURN_PWM);
     while (abs32(Heading_Raw()) < stop_at) {
         if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
@@ -155,6 +157,7 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     turn_trace("sweep");
 
     // --- PHASE 3: active brake, tracked -----------------------------------
+    Power_SetActivity(ACT_TURN_BRAKE);
     pulse_tracked(!cw, TURN_BRAKE_PWM, TURN_BRAKE_MS, &next_ms);
     turn_trace("brake");
 
@@ -194,6 +197,7 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
         if (nudge_ms < TURN_NUDGE_MS_MIN) nudge_ms = TURN_NUDGE_MS_MIN;
         if (nudge_ms > TURN_NUDGE_MS_MAX) nudge_ms = TURN_NUDGE_MS_MAX;
 
+        Power_SetActivity(ACT_TURN_NUDGE);
         pulse_tracked((err > 0) ? cw : !cw, TURN_NUDGE_PWM, nudge_ms, &next_ms);
         settle_tracked(TURN_SETTLE_MS, &next_ms);
         res->nudges_used++;
