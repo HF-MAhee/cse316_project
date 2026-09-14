@@ -102,7 +102,7 @@ int32_t Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
         if (-err_raw > worst) worst = -err_raw;
 
         corr = (int16_t)(((int32_t)HOLD_KP_NUM * err_deg10) / HOLD_KP_DEN);
-        corr = (int16_t)(corr + (((int32_t)WALL_KD_NUM * rate) / WALL_KD_DEN));
+        corr = (int16_t)(corr + (((int32_t)HOLD_KD_NUM * rate) / HOLD_KD_DEN));
         corr = clamp16(corr, -WALL_MAX_CORRECTION, WALL_MAX_CORRECTION);
 
         l = (int16_t)pwm + corr;

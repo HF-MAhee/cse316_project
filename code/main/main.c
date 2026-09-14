@@ -180,38 +180,38 @@ int main(void) {
         uint8_t leg;
         int32_t carry = 0;      // previous turn's leftover, in this leg's frame
         int32_t total_raw = 0;  // rotation over the WHOLE path, legs and turns
-        // Per-phase record, replayed as a table at the end so the whole run is
-        // readable without scrolling back through the sample stream.
-        int16_t leg_off10[SQUARE_SIDES], leg_net10[SQUARE_SIDES];
-        int16_t trn_ang10[SQUARE_SIDES], trn_fin10[SQUARE_SIDES];
-        uint8_t trn_nudge[SQUARE_SIDES], trn_conv[SQUARE_SIDES];
 
         // Self-describing header: every tunable that shapes this run, so the
         // log can be analysed later without having to guess the build.
-        Debug_Str("# SQUARE TEST  sides=");     Debug_Int(SQUARE_SIDES);
-        Debug_Str(" pwm=");                     Debug_Int(SQUARE_TEST_PWM);
-        Debug_Str(" legms=");                   Debug_Int(SQUARE_LEG_MS);
-        Debug_NL();
-        Debug_Str("# hold: tick=");              Debug_Int(HOLD_TICK_MS);
-        Debug_Str(" kp=");                       Debug_Int(HOLD_KP_NUM);
-        Debug_Str("/");                          Debug_Int(HOLD_KP_DEN);
-        Debug_Str(" kd=");                       Debug_Int(WALL_KD_NUM);
-        Debug_Str("/");                          Debug_Int(WALL_KD_DEN);
-        Debug_Str(" maxcorr=");                  Debug_Int(WALL_MAX_CORRECTION);
-        Debug_Str(" pwmfloor=");                 Debug_Int(MOTOR_MIN_PWM);
-        Debug_Str(" pwmceil=");                  Debug_Int(MOTOR_MAX_PWM);
-        Debug_NL();
-        Debug_Str("# turn: margin=");            Debug_Int(TURN_STOP_MARGIN_DEG);
-        Debug_Str(" deadband=");                 Debug_Int(TURN_DEADBAND_DEG);
-        Debug_Str(" settle=");                   Debug_Int(TURN_SETTLE_MS);
-        Debug_Str(" pwm=");                      Debug_Int(TURN_PWM);
-        Debug_Str(" lsbms_per_deg=");             Debug_Int(GYRO_LSB_MS_PER_DEGREE);
-        Debug_NL();
-        Debug_Str("# L,ms,err10,rate,corr,pwmL,pwmR   <- heading-hold sample\r\n");
-        Debug_Str("# S,ms,rate,hdg10                  <- turn sample\r\n");
-        Debug_Str("# T <phase> / HOLD / TURN / SQUARE <- phase and summary\r\n");
-        // ~600 bytes of header against a 192 byte ring buffer: flush or most
-        // of it is dropped. Safe here, nothing is moving yet.
+        //
+        // Debug_Flush() after EVERY line, not once at the end. tx_push() drops
+        // when the ring buffer is full, so the loss happens during the pushes
+        // -- a flush afterwards is far too late. A measured run lost 213 bytes
+        // of this header with a single trailing flush.
+        Debug_Str("# SQUARE TEST  sides=");   Debug_Int(SQUARE_SIDES);
+        Debug_Str(" pwm=");                   Debug_Int(SQUARE_TEST_PWM);
+        Debug_Str(" legms=");                 Debug_Int(SQUARE_LEG_MS);
+        Debug_NL();                           Debug_Flush();
+        Debug_Str("# hold: tick=");           Debug_Int(HOLD_TICK_MS);
+        Debug_Str(" kp=");                    Debug_Int(HOLD_KP_NUM);
+        Debug_Str("/");                       Debug_Int(HOLD_KP_DEN);
+        Debug_Str(" kd=");                    Debug_Int(HOLD_KD_NUM);
+        Debug_Str("/");                       Debug_Int(HOLD_KD_DEN);
+        Debug_NL();                           Debug_Flush();
+        Debug_Str("# lim: maxcorr=");         Debug_Int(WALL_MAX_CORRECTION);
+        Debug_Str(" pwmfloor=");              Debug_Int(MOTOR_MIN_PWM);
+        Debug_Str(" pwmceil=");               Debug_Int(MOTOR_MAX_PWM);
+        Debug_NL();                           Debug_Flush();
+        Debug_Str("# turn: margin=");         Debug_Int(TURN_STOP_MARGIN_DEG);
+        Debug_Str(" deadband=");              Debug_Int(TURN_DEADBAND_DEG);
+        Debug_Str(" settle=");                Debug_Int(TURN_SETTLE_MS);
+        Debug_Str(" pwm=");                   Debug_Int(TURN_PWM);
+        Debug_NL();                           Debug_Flush();
+        Debug_Str("# gyro: lsbms_per_deg=");  Debug_Int(GYRO_LSB_MS_PER_DEGREE);
+        Debug_NL();                           Debug_Flush();
+        Debug_Str("# L,ms,err10,rate,corr,pwmL,pwmR  <- heading-hold sample\r\n");
+        Debug_Flush();
+        Debug_Str("# S,ms,rate,hdg10                 <- turn sample\r\n");
         Debug_Flush();
 
 #if SQUARE_TRACE_TURNS
@@ -256,44 +256,29 @@ int main(void) {
             Debug_KV("total10", (total_raw * 10L) / GYRO_LSB_MS_PER_DEGREE);
             Debug_NL();
 
-            leg_off10[leg] = (int16_t)(((net_raw + carry) * 10L) / GYRO_LSB_MS_PER_DEGREE);
-            leg_net10[leg] = (int16_t)((net_raw * 10L) / GYRO_LSB_MS_PER_DEGREE);
-            trn_ang10[leg] = (int16_t)r.achieved_tenths;
-            trn_fin10[leg] = (int16_t)r.final_error_tenths;
-            trn_nudge[leg] = r.nudges_used;
-            trn_conv[leg]  = r.converged;
-
             // Hand this turn's leftover to the next leg instead of discarding
             // it -- Turn_Execute() zeroes the accumulator, so without this the
             // residual from every corner accumulates into the square.
             carry = r.residual_raw;
         }
 
-        // Whole-run table. legoff = how far off its held heading each leg
-        // finished; legnet = how much it actually rotated (should be ~0);
-        // ang/fin/nud/cnv are that corner's turn.
+        // No end-of-run table: the live HOLD/TURN/CUM lines above already carry
+        // every number, and buffering them into arrays to replay at the end
+        // pushed ~250 bytes into a 192-byte ring buffer in one burst, which
+        // came back garbled and untrustworthy.
+        //
+        // This is the one number worth restating: whether the square closed in
+        // HEADING. -3600 tenths is a perfect four-corner circuit. Position can
+        // still be off even at -3600, since heading hold does not correct
+        // sideways displacement and battery sag shortens the later legs.
         Debug_NL();
-        Debug_Str("# SQUARE SUMMARY  leg,legoff10,legnet10,ang10,fin10,nudges,conv\r\n");
-        for (leg = 0; leg < SQUARE_SIDES; leg++) {
-            Debug_Str("SQUARE,");
-            Debug_Int(leg + 1);          Debug_Str(",");
-            Debug_Int(leg_off10[leg]);   Debug_Str(",");
-            Debug_Int(leg_net10[leg]);   Debug_Str(",");
-            Debug_Int(trn_ang10[leg]);   Debug_Str(",");
-            Debug_Int(trn_fin10[leg]);   Debug_Str(",");
-            Debug_Int(trn_nudge[leg]);   Debug_Str(",");
-            Debug_Int(trn_conv[leg]);
-            Debug_NL();
-        }
-        // The single number that says whether the square closed in HEADING:
-        // -3600 tenths is a perfect four-corner circuit. Position can still be
-        // off even at -3600, since heading hold does not correct sideways
-        // displacement and battery sag makes later legs shorter.
+        Debug_Flush();
         Debug_Str("SQUARE TOTAL ");
         Debug_KV("total10", (total_raw * 10L) / GYRO_LSB_MS_PER_DEGREE);
         Debug_KV("ideal10", -3600L);
         Debug_KV("drop", Debug_Dropped());
         Debug_NL();
+        Debug_Flush();
         Debug_Str("SQUARE TEST DONE\r\n");
         Debug_Flush();
         Motors_Stop();

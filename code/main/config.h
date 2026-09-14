@@ -234,11 +234,30 @@
 // controller is symmetric (base +/- corr), so the differential is 2*corr and
 // 1.25 per degree matches.
 //
-// D reuses WALL_KD_NUM/WALL_KD_DEN: same chassis, and that value was already
-// corrected from /120 to /65 against measured crash data.
+// D gets its OWN constant. Reusing WALL_KD_NUM/WALL_KD_DEN (=1/65) here was
+// wrong: that was tuned against a P term measured in CENTIMETRES of wall
+// offset, where P contributes 7..22 counts on a normal 5-15cm error. This P
+// term is in degrees and contributes only 1.25 counts per degree, so the same
+// D is proportionally about 3x too strong -- and a measured run proved it. At
+// /65, one deg/sec of rotation cancels 0.8 degrees of heading error, so the
+// controller behaved as a rate damper, not a position controller:
+//
+//   L,1281,62,-503,0,60,60   <- 6.2 deg off heading, correction ZERO
+//                               P = 62/8 = +7, D = -503/65 = -7, sum 0
+//
+// The original algorithm's ratio was 2.52 counts/degree against rate/100 of
+// DIFFERENTIAL, i.e. one deg/sec cancelled only 0.26 degrees of error. This
+// controller is symmetric (base +/- corr) so the differential is 2*corr, and
+// /200 reproduces that ratio exactly.
+//
+// Deliberately NOT adding an I term yet. The measured bias is a start-up
+// transient, not a constant offset, and an integrator on this loop is how
+// bug #1 (windup to saturation, first crash) happened. Fix the ratio first.
 #define HOLD_TICK_MS           10   // matches the original autocorrect loop
 #define HOLD_KP_NUM            1
 #define HOLD_KP_DEN            8
+#define HOLD_KD_NUM            1
+#define HOLD_KD_DEN            200
 
 // Per-sample trace of the heading-hold controller, so a leg that does not
 // track straight can be diagnosed from the log instead of guessed at:
