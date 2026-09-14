@@ -186,6 +186,12 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     res->achieved_tenths = abs32(Heading_DegreesTenths());
     res->peak_rate       = s_peak_rate;
 
+    {
+        int32_t left = target - abs32(Heading_Raw());
+        res->final_error_tenths = (left * 10L) / GYRO_LSB_MS_PER_DEGREE;
+        res->converged = (abs32(left) <= deadband) ? 1 : 0;
+    }
+
     // Direction check. Convention: positive gyro Z = turning LEFT, so a right
     // turn must accumulate negative. Everything above works on |heading|, so
     // without this a turn that went the wrong way reports a clean success.
@@ -231,6 +237,8 @@ void Turn_180(turn_result_t *res) {
     res->peak_rate            = (a.peak_rate > b.peak_rate) ? a.peak_rate : b.peak_rate;
     res->wrong_way            = a.wrong_way | b.wrong_way;
     res->coast_ms             = (a.coast_ms > b.coast_ms) ? a.coast_ms : b.coast_ms;
+    res->final_error_tenths   = a.final_error_tenths + b.final_error_tenths;
+    res->converged            = a.converged & b.converged;
 #else
     Turn_Execute(180, TURN_RIGHT, res);
 #endif

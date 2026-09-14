@@ -312,8 +312,35 @@
 #define TURN_KICK_MS           40
 #define TURN_BRAKE_PWM         100
 #define TURN_BRAKE_MS          20
-#define TURN_SETTLE_MS         300  // motors off, still integrating coast
-#define TURN_STOP_MARGIN_DEG   4    // cut the main sweep this early
+// Measured (6-turn Mode 6 run, both directions): after the motors cut, the
+// chassis was still rotating above ~3 deg/sec for the WHOLE 300ms window --
+// coastms came back 283..305 against a 300 window, and one turn was still at
+// 23 deg/sec when it closed. The closed-loop correction below was therefore
+// measuring a heading that had not stopped changing. 500 gives real margin.
+#define TURN_SETTLE_MS         500  // motors off, still integrating coast
+
+// Cut the main sweep this early. Was 4, which was not a coast estimate at all
+// -- measured coast from sweep exit to rest is 36.7/40.2/40.9/41.0/46.4/42.3
+// degrees (mean 41.3) because the sweep is still ACCELERATING when it exits
+// (rate climbed monotonically to ~24000 LSB, ~370 deg/sec, never reaching
+// terminal velocity in 86 degrees). The result was a physical swing to ~128
+// degrees followed by 4-5 reverse nudges back to 90: correct final angle,
+// wrong mechanism, and a 38 degree excursion the corridor has to absorb.
+//
+// 35 is derived, not guessed: cutting at 55 degrees leaves the chassis at
+// ~20800 LSB instead of ~22700, and coast scales somewhere between linearly
+// and quadratically with cut-off rate, which puts the landing at 89.6..92.8
+// degrees. The nudge loop trims either end of that easily -- and it corrects
+// in BOTH directions, so an over- or under-estimate here is self-healing.
+// NEEDS ONE MODE 6 RUN TO CONFIRM: expect err10 near zero and nudges 0-1.
+//
+// This value is calibrated for 90 degree turns. A single 180 degree sweep
+// would exit far faster and coast much further, which is the real reason
+// TURN_180_AS_TWO_90S must stay 1.
+#define TURN_STOP_MARGIN_DEG   35
+
+// 2 degrees is about the floor worth chasing: the stream shows ~1 degree of
+// mechanical settling jitter (tyres unwinding) after the rotation stops.
 #define TURN_DEADBAND_DEG      2    // "close enough"
 #define TURN_NUDGE_PWM         140
 

@@ -44,6 +44,16 @@ typedef struct {
     // reverses, and burns its whole nudge budget oscillating. Well under
     // TURN_SETTLE_MS means the settle is long enough.
     int32_t coast_ms;
+
+    // Signed error STILL REMAINING when the correction loop gave up, tenths of
+    // a degree, and whether it got inside TURN_DEADBAND_DEG at all.
+    //
+    // Without these, a turn that exhausts TURN_MAX_NUDGES while still out of
+    // deadband reports achieved_tenths and timed_out=0 -- indistinguishable
+    // from success. A measured run used all 5 nudges on 3 of 6 turns starting
+    // ~40 degrees out, so the budget was one bad turn from running dry.
+    int32_t final_error_tenths;
+    uint8_t converged;
 } turn_result_t;
 
 // Blocking closed-loop pivot. Sonar is meaningless while rotating, so the

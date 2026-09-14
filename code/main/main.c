@@ -227,6 +227,11 @@ int main(void) {
         Debug_Str("# SUM ..                <- per-turn summary\r\n");
         Debug_Str("# tape a reference line on the floor, protractor each turn "
                   "during the pause\r\n");
+        // These header lines are ~350 bytes pushed back to back, which is more
+        // than DEBUG_TX_BUF (192) can hold while the UART drains at 38400 --
+        // a measured run lost 165 bytes of them and garbled the legend. Safe
+        // to spin here: nothing is moving yet.
+        Debug_Flush();
         Timer_WaitMs(STARTUP_DELAY_MS);
 
         for (n = 0; n < TURNDBG_REPEATS; n++) {
@@ -247,6 +252,10 @@ int main(void) {
             Debug_KV("nudges",  r.nudges_used);
             Debug_KV("peak",    r.peak_rate);
             Debug_KV("coastms", r.coast_ms);
+            // fin10 is what was still left when the nudge loop stopped, and
+            // conv=0 means it ran out of nudges before reaching the deadband.
+            Debug_KV("fin10",   r.final_error_tenths);
+            Debug_KV("conv",    r.converged);
             Debug_KV("wrong",   r.wrong_way);
             Debug_KV("recal",   r.recal_ok);
             Debug_KV("to",      r.timed_out);
