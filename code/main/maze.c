@@ -128,7 +128,7 @@ void Maze_Tick(int16_t gyro_rate) {
 
     case ST_STARTUP:
         if (in_state_for(STARTUP_DELAY_MS)) {
-            Debug_Str("GO\r\n");
+            Debug_P("GO\r\n");
             Drive_Begin();
             s_leg_started = millis();
             enter(ST_DRIVING);
@@ -141,7 +141,7 @@ void Maze_Tick(int16_t gyro_rate) {
         j = classify();
 
         if (j == J_DEAD_END) {
-            Debug_Str("DEAD END\r\n");
+            Debug_P("DEAD END\r\n");
             s_do_180 = 1;
             Drive_Stop();
             enter(ST_STOPPING);
@@ -152,7 +152,7 @@ void Maze_Tick(int16_t gyro_rate) {
             // Might be the exit -- but at a left-or-right T the two side
             // openings can appear a moment before the front wall closes in,
             // which looks identical. Drive on a short way and re-check.
-            Debug_Str("all-open, confirming\r\n");
+            Debug_P("all-open, confirming\r\n");
             enter(ST_CONFIRM_EXIT);
             break;
         }
@@ -178,7 +178,7 @@ void Maze_Tick(int16_t gyro_rate) {
         // Safety net: a wall the sonar never saw (angled or soft surfaces
         // reflect the pulse away and read as clear).
         if ((millis() - s_leg_started) > MAX_LEG_MS) {
-            Debug_Str("leg timeout\r\n");
+            Debug_P("leg timeout\r\n");
             s_do_180 = 0;
             s_pending_dir = TURN_RIGHT;
             Drive_Stop();
@@ -191,7 +191,7 @@ void Maze_Tick(int16_t gyro_rate) {
         Drive_Tick(gyro_rate);
         // If the front wall closes in first, stop short of it instead.
         if (Sonar_IsValid(SONAR_FRONT) && Sonar_Latest(SONAR_FRONT) < FRONT_STOP_CM) {
-            Debug_Str("front obstacle detected, stopping short\r\n");
+            Debug_P("front obstacle detected, stopping short\r\n");
             Drive_Stop();
             enter(ST_STOPPING);
             break;
@@ -208,13 +208,13 @@ void Maze_Tick(int16_t gyro_rate) {
         if (Sonar_FrontBlocked()) {
             // A wall appeared: this was a junction, not the exit. Re-evaluate
             // on the next DRIVING tick.
-            Debug_Str("not exit, front wall\r\n");
+            Debug_P("not exit, front wall\r\n");
             enter(ST_DRIVING);
             break;
         }
         if (in_state_for(EXIT_CONFIRM_MS)) {
             if (classify() == J_ALL_OPEN) {
-                Debug_Str("MAZE COMPLETE\r\n");
+                Debug_P("MAZE COMPLETE\r\n");
                 Drive_Stop();
                 enter(ST_FINISHED);
             } else {
@@ -233,8 +233,8 @@ void Maze_Tick(int16_t gyro_rate) {
         // Refresh the gyro bias while genuinely stationary. Thermal drift
         // over a long run would otherwise creep into every subsequent turn.
         uint8_t ok = Gyro_CalibrateQuick();
-        Debug_Str(ok ? "recal ok " : "recal SKIPPED ");
-        Debug_KV("off", Gyro_GetOffset());
+        if (ok) Debug_P("recal ok "); else Debug_P("recal SKIPPED ");
+        Debug_KVF("off", Gyro_GetOffset());
         Debug_NL();
         Heading_Reset();
         Sonar_Flush();
@@ -245,19 +245,20 @@ void Maze_Tick(int16_t gyro_rate) {
     case ST_DECIDING: {
         turn_result_t r;
         if (s_do_180) {
-            Debug_Str("180\r\n");
+            Debug_P("180\r\n");
             Turn_180(&r);
         } else {
-            Debug_Str((s_pending_dir == TURN_RIGHT) ? "turn R\r\n" : "turn L\r\n");
+            if (s_pending_dir == TURN_RIGHT) Debug_P("turn R\r\n");
+            else                            Debug_P("turn L\r\n");
             Turn_90(s_pending_dir, &r);
         }
-        Debug_KV("ang10", r.achieved_tenths);
-        Debug_KV("nudge", r.nudges_used);
-        Debug_KV("to", r.timed_out);
+        Debug_KVF("ang10", r.achieved_tenths);
+        Debug_KVF("nudge", r.nudges_used);
+        Debug_KVF("to", r.timed_out);
         // A wrong-way pivot here is the expensive one: the maze solver thinks
         // it went right when it went left, and every position estimate after
         // this point is wrong.
-        if (r.wrong_way) Debug_Str("WRONG WAY ");
+        if (r.wrong_way) Debug_P("WRONG WAY ");
         Debug_NL();
         enter(ST_RECOVERING);
         break;

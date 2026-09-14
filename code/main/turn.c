@@ -24,12 +24,15 @@ static int32_t  s_coast_ms     = 0;   // result of the most recent settle
 void Turn_SampleTrace(uint8_t on) { s_sample_trace = on; }
 
 #if TURN_TRACE
-static void turn_trace(const char *tag) {
-    Debug_Str("  T ");
-    Debug_Str(tag);
-    Debug_KV(" hdg10", Heading_DegreesTenths());
+// The tag comes from flash, like every other debug literal -- see the note in
+// debug.h about SRAM.
+static void turn_trace_p(const char *tag_flash) {
+    Debug_P("  T ");
+    Debug_StrP(tag_flash);
+    Debug_KVF(" hdg10", Heading_DegreesTenths());
     Debug_NL();
 }
+#define turn_trace(tag) turn_trace_p(PSTR(tag))
 #else
 #define turn_trace(tag) ((void)0)
 #endif
@@ -50,11 +53,11 @@ static void turn_sample(uint32_t *next_ms) {
 
     if (s_sample_trace && ++s_decimate >= TURNDBG_SAMPLE_EVERY) {
         s_decimate = 0;
-        Debug_Str("S,");
+        Debug_P("S,");
         Debug_Int((int32_t)(millis() - s_turn_t0));
-        Debug_Str(",");
+        Debug_P(",");
         Debug_Int(r);
-        Debug_Str(",");
+        Debug_P(",");
         Debug_Int(Heading_DegreesTenths());
         Debug_NL();
     }
@@ -173,11 +176,11 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
         // Which way this nudge pushed and how long, then where it landed.
         // Nudges alternating sign run after run means the settle is ending
         // before the chassis has actually stopped coasting.
-        Debug_Str("  T nudge");
+        Debug_P("  T nudge");
         Debug_Int(res->nudges_used);
-        Debug_Str((err > 0) ? " fwd " : " rev ");
-        Debug_KV("ms", (int32_t)nudge_ms);
-        Debug_KV("hdg10", Heading_DegreesTenths());
+        if (err > 0) Debug_P(" fwd "); else Debug_P(" rev ");
+        Debug_KVF("ms", (int32_t)nudge_ms);
+        Debug_KVF("hdg10", Heading_DegreesTenths());
         Debug_NL();
 #endif
     }

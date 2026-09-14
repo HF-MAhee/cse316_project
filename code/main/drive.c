@@ -129,17 +129,17 @@ int32_t Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
 #if HOLD_TRACE
         if (++decimate >= HOLD_SAMPLE_EVERY) {
             decimate = 0;
-            Debug_Str("L,");
+            Debug_P("L,");
             Debug_Int((int32_t)(millis() - t0));
-            Debug_Str(",");
+            Debug_P(",");
             Debug_Int(err_deg10);
-            Debug_Str(",");
+            Debug_P(",");
             Debug_Int(rate);
-            Debug_Str(",");
+            Debug_P(",");
             Debug_Int(corr);
-            Debug_Str(",");
+            Debug_P(",");
             Debug_Int(l);
-            Debug_Str(",");
+            Debug_P(",");
             Debug_Int(r);
             Debug_NL();
         }
@@ -161,13 +161,13 @@ int32_t Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
     //           controller is holding a constant offset to compensate, which
     //           no amount of gyro tuning will fix.
     //   drop    cumulative; compare leg to leg to confirm the L stream is intact
-    Debug_Str("  HOLD ");
-    Debug_KV("off10", ((Heading_Raw() + start_offset_raw) * 10L) / GYRO_LSB_MS_PER_DEGREE);
-    Debug_KV("max10", (worst * 10L) / GYRO_LSB_MS_PER_DEGREE);
-    Debug_KV("net10", (Heading_Raw() * 10L) / GYRO_LSB_MS_PER_DEGREE);
-    Debug_KV("mcorr10", n_samples ? ((corr_sum * 10L) / (int32_t)n_samples) : 0);
-    Debug_KV("n", (int32_t)n_samples);
-    Debug_KV("drop", Debug_Dropped());
+    Debug_P("  HOLD ");
+    Debug_KVF("off10", ((Heading_Raw() + start_offset_raw) * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_KVF("max10", (worst * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_KVF("net10", (Heading_Raw() * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_KVF("mcorr10", n_samples ? ((corr_sum * 10L) / (int32_t)n_samples) : 0);
+    Debug_KVF("n", (int32_t)n_samples);
+    Debug_KVF("drop", Debug_Dropped());
     Debug_NL();
 
     return Heading_Raw();
@@ -213,7 +213,7 @@ void Drive_Tick(int16_t gyro_rate) {
             Motors_Pivot(cw, WALL_RECOVERY_PIVOT_PWM);
             s_recover_phase = 2;
             s_recover_until = millis() + WALL_RECOVERY_PIVOT_MS;
-            Debug_Str("  -> clear of wall, pivoting away\r\n");
+            Debug_P("  -> clear of wall, pivoting away\r\n");
             return;
         }
 
@@ -226,7 +226,7 @@ void Drive_Tick(int16_t gyro_rate) {
         s_recover_until = 0;
         s_emerg_side    = 0;
         s_emerg_since   = 0;
-        Debug_Str("  -> recovered, resuming normal driving\r\n");
+        Debug_P("  -> recovered, resuming normal driving\r\n");
         return;
     }
 
@@ -238,7 +238,7 @@ void Drive_Tick(int16_t gyro_rate) {
         if (s_emerg_side != 1) {
             s_emerg_side = 1;
             s_emerg_since = millis();
-            Debug_Str("COLLISION COURSE: left wall too close, steering right\r\n");
+            Debug_P("COLLISION COURSE: left wall too close, steering right\r\n");
         }
 
         // The ramped steer-away below still drives BOTH wheels forward -- it
@@ -256,7 +256,7 @@ void Drive_Tick(int16_t gyro_rate) {
             s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0; s_dbg.corr = 0;
             s_dbg.pwm_l = 0; s_dbg.pwm_r = 0;
             s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
-            Debug_Str("STUCK on left wall, steering alone didn't clear it -- reversing off\r\n");
+            Debug_P("STUCK on left wall, steering alone didn't clear it -- reversing off\r\n");
             return;
         }
 
@@ -283,7 +283,7 @@ void Drive_Tick(int16_t gyro_rate) {
         if (s_emerg_side != 2) {
             s_emerg_side = 2;
             s_emerg_since = millis();
-            Debug_Str("COLLISION COURSE: right wall too close, steering left\r\n");
+            Debug_P("COLLISION COURSE: right wall too close, steering left\r\n");
         }
 
         if ((millis() - s_emerg_since) > WALL_STUCK_MS) {
@@ -295,7 +295,7 @@ void Drive_Tick(int16_t gyro_rate) {
             s_dbg.error_cm = 0; s_dbg.wall_term = 0; s_dbg.gyro_term = 0; s_dbg.corr = 0;
             s_dbg.pwm_l = 0; s_dbg.pwm_r = 0;
             s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
-            Debug_Str("STUCK on right wall, steering alone didn't clear it -- reversing off\r\n");
+            Debug_P("STUCK on right wall, steering alone didn't clear it -- reversing off\r\n");
             return;
         }
 
@@ -318,7 +318,7 @@ void Drive_Tick(int16_t gyro_rate) {
     // Neither side is in emergency this tick -- clear the stuck timer so a
     // fresh contact later gets its own full WALL_STUCK_MS grace period.
     if (s_emerg_side != 0) {
-        Debug_Str("clear of wall, resuming normal centring\r\n");
+        Debug_P("clear of wall, resuming normal centring\r\n");
     }
     s_emerg_side  = 0;
     s_emerg_since = 0;

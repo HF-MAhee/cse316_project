@@ -19,11 +19,17 @@
 // Every line is flushed. This is a bench diagnostic with the motors off, so
 // there is no control loop to protect, and a dropped byte in a report that
 // exists to be read is worse than the wait.
-static void line(const char *s) {
-    Debug_Str(s);
+//
+// The text lives in FLASH. This file alone holds ~4 KB of it, against 2 KB of
+// total SRAM -- as .data it could not possibly fit, and that is exactly why an
+// earlier build of this mode printed nothing at all. Use LINE("..."), never a
+// bare string.
+static void line_p(const char *flash_str) {
+    Debug_StrP(flash_str);
     Debug_NL();
     Debug_Flush();
 }
+#define LINE(s) line_p(PSTR(s))
 
 static void print_hex8(uint8_t v) {
     static const char digits[] = "0123456789ABCDEF";
@@ -40,10 +46,10 @@ static void print_hex8(uint8_t v) {
 // this wrong silently scales every angle in the project.
 static void print_range(uint8_t cfg) {
     switch ((cfg >> 3) & 0x03) {
-        case 0: Debug_Str(" = +/-250 dps, 131 LSB per deg/sec");  break;
-        case 1: Debug_Str(" = +/-500 dps, 65.5 LSB per deg/sec"); break;
-        case 2: Debug_Str(" = +/-1000 dps, 32.8 LSB per deg/sec");break;
-        default:Debug_Str(" = +/-2000 dps, 16.4 LSB per deg/sec");break;
+        case 0: Debug_P(" = +/-250 dps, 131 LSB per deg/sec");  break;
+        case 1: Debug_P(" = +/-500 dps, 65.5 LSB per deg/sec"); break;
+        case 2: Debug_P(" = +/-1000 dps, 32.8 LSB per deg/sec");break;
+        default:Debug_P(" = +/-2000 dps, 16.4 LSB per deg/sec");break;
     }
 }
 
@@ -57,27 +63,27 @@ static int16_t be16(const uint8_t *p) {
 static void check_bus_lines(void) {
     uint8_t scl, sda;
 
-    line("");
-    line("[1] I2C bus lines -- both should idle HIGH via their pull-ups");
+    LINE("");
+    LINE("[1] I2C bus lines -- both should idle HIGH via their pull-ups");
 
     // PC0 = SCL, PC1 = SDA. TWEN leaves them as open-drain with pull-ups, so a
     // line stuck LOW while idle means a short, a seized device, or no pull-up.
     scl = (PINC & (1 << PC0)) ? 1 : 0;
     sda = (PINC & (1 << PC1)) ? 1 : 0;
 
-    Debug_Str("    SCL (PC0): ");
-    Debug_Str(scl ? "HIGH  ok" : "LOW   *** FAULT ***");
+    Debug_P("    SCL (PC0): ");
+    if (scl) Debug_P("HIGH  ok"); else Debug_P("LOW   *** FAULT ***");
     Debug_NL(); Debug_Flush();
-    Debug_Str("    SDA (PC1): ");
-    Debug_Str(sda ? "HIGH  ok" : "LOW   *** FAULT ***");
+    Debug_P("    SDA (PC1): ");
+    if (sda) Debug_P("HIGH  ok"); else Debug_P("LOW   *** FAULT ***");
     Debug_NL(); Debug_Flush();
 
     if (scl && sda) {
-        line("    -> bus is idle and pulled up correctly");
+        LINE("    -> bus is idle and pulled up correctly");
     } else {
-        line("    -> a line held LOW while idle means a short to ground, a");
-        line("       device holding the bus, or a missing pull-up. Nothing");
-        line("       below will work until this is fixed.");
+        LINE("    -> a line held LOW while idle means a short to ground, a");
+        LINE("       device holding the bus, or a missing pull-up. Nothing");
+        LINE("       below will work until this is fixed.");
     }
 }
 
@@ -87,36 +93,36 @@ static void check_bus_lines(void) {
 static uint8_t check_identity(void) {
     uint8_t who = 0;
 
-    line("");
-    line("[2] Device identity -- WHO_AM_I (0x75) must read 0x68");
+    LINE("");
+    LINE("[2] Device identity -- WHO_AM_I (0x75) must read 0x68");
 
     if (!I2C_ReadRegs(MPU_ADDR_W, REG_WHOAMI, &who, 1)) {
-        line("    read TIMED OUT -- the device did not answer at all");
-        line("    -> NOT CONNECTED. Check 5V and GND first, then SDA/SCL.");
-        line("       (this is also the fault that FREEZES the normal");
-        line("       firmware, because its I2C waits are unbounded)");
+        LINE("    read TIMED OUT -- the device did not answer at all");
+        LINE("    -> NOT CONNECTED. Check 5V and GND first, then SDA/SCL.");
+        LINE("       (this is also the fault that FREEZES the normal");
+        LINE("       firmware, because its I2C waits are unbounded)");
         return 0;
     }
 
-    Debug_Str("    read ");
+    Debug_P("    read ");
     print_hex8(who);
     if (who == WHOAMI_VALUE) {
-        Debug_Str("  PASS -- MPU6050 present and answering");
+        Debug_P("  PASS -- MPU6050 present and answering");
         Debug_NL(); Debug_Flush();
         return 1;
     }
 
-    Debug_Str("  *** WRONG ***");
+    Debug_P("  *** WRONG ***");
     Debug_NL(); Debug_Flush();
     if (who == 0x00) {
-        line("    -> 0x00 means the bus answered but returned nothing. Usually");
-        line("       SDA shorted to ground, or the device is unpowered while");
-        line("       something else holds the line.");
+        LINE("    -> 0x00 means the bus answered but returned nothing. Usually");
+        LINE("       SDA shorted to ground, or the device is unpowered while");
+        LINE("       something else holds the line.");
     } else if (who == 0xFF) {
-        line("    -> 0xFF means nothing drove the bus and the pull-up won.");
-        line("       SDA is effectively disconnected.");
+        LINE("    -> 0xFF means nothing drove the bus and the pull-up won.");
+        LINE("       SDA is effectively disconnected.");
     } else {
-        line("    -> some device answered, but it is not an MPU6050 at 0x68.");
+        LINE("    -> some device answered, but it is not an MPU6050 at 0x68.");
     }
     return 0;
 }
@@ -133,40 +139,40 @@ static uint8_t read_config(uint8_t *pwr, uint8_t *cfg) {
 static void check_config(uint8_t *cfg_out) {
     uint8_t pwr = 0xFF, cfg = 0xFF;
 
-    line("");
-    line("[3] Configuration readback -- proves MPU6050_Init() took effect");
+    LINE("");
+    LINE("[3] Configuration readback -- proves MPU6050_Init() took effect");
 
     if (!read_config(&pwr, &cfg)) {
-        line("    readback TIMED OUT");
+        LINE("    readback TIMED OUT");
         *cfg_out = 0xFF;
         return;
     }
 
-    Debug_Str("    PWR_MGMT_1  (0x6B) = ");
+    Debug_P("    PWR_MGMT_1  (0x6B) = ");
     print_hex8(pwr);
-    Debug_Str((pwr & 0x40) ? "  *** ASLEEP ***" : "  awake  ok");
+    if (pwr & 0x40) Debug_P("  *** ASLEEP ***"); else Debug_P("  awake  ok");
     Debug_NL(); Debug_Flush();
 
-    Debug_Str("    GYRO_CONFIG (0x1B) = ");
+    Debug_P("    GYRO_CONFIG (0x1B) = ");
     print_hex8(cfg);
     print_range(cfg);
     Debug_NL(); Debug_Flush();
 
     if (cfg == 0x08) {
-        line("    -> matches what the firmware wrote. Scale is correct, so");
-        line("       GYRO_LSB_MS_PER_DEGREE = 65500 is the right constant.");
+        LINE("    -> matches what the firmware wrote. Scale is correct, so");
+        LINE("       GYRO_LSB_MS_PER_DEGREE = 65500 is the right constant.");
     } else {
-        line("    *** SCALE MISMATCH ***");
-        line("    -> the firmware writes 0x08 (+/-500 dps) at init. Reading");
-        line("       anything else means the device RESET ITSELF since then,");
-        line("       reverting to its power-on default. That is a POWER fault,");
-        line("       not a code fault -- and while it lasts every angle is");
-        line("       scaled wrong, so turns land at the wrong physical angle");
-        line("       while the log still reports 90 degrees.");
+        LINE("    *** SCALE MISMATCH ***");
+        LINE("    -> the firmware writes 0x08 (+/-500 dps) at init. Reading");
+        LINE("       anything else means the device RESET ITSELF since then,");
+        LINE("       reverting to its power-on default. That is a POWER fault,");
+        LINE("       not a code fault -- and while it lasts every angle is");
+        LINE("       scaled wrong, so turns land at the wrong physical angle");
+        LINE("       while the log still reports 90 degrees.");
     }
     if (pwr & 0x40) {
-        line("    -> ASLEEP also means it reset: init clears this bit. A");
-        line("       sleeping gyro returns frozen values, not an error.");
+        LINE("    -> ASLEEP also means it reset: init clears this bit. A");
+        LINE("       sleeping gyro returns frozen values, not an error.");
     }
     *cfg_out = cfg;
 }
@@ -183,9 +189,9 @@ static void check_reads(void) {
     int16_t  vmax[3]  = {-32768, -32768, -32768};
     uint8_t  a;
 
-    line("");
-    line("[4] Read reliability + [5] noise floor");
-    line("    KEEP THE ROBOT PERFECTLY STILL for this part.");
+    LINE("");
+    LINE("[4] Read reliability + [5] noise floor");
+    LINE("    KEEP THE ROBOT PERFECTLY STILL for this part.");
 
     for (i = 0; i < GYRODIAG_READS; i++) {
         if (!I2C_ReadRegs(MPU_ADDR_W, REG_GYRO_X, buf, 6)) {
@@ -218,48 +224,50 @@ static void check_reads(void) {
         Timer_WaitMs(5);
     }
 
-    Debug_Str("    attempted "); Debug_Int(GYRODIAG_READS);
-    Debug_Str(", succeeded ");   Debug_Int(ok);
-    Debug_Str(", TIMED OUT ");   Debug_Int(fail);
+    Debug_P("    attempted "); Debug_Int(GYRODIAG_READS);
+    Debug_P(", succeeded ");   Debug_Int(ok);
+    Debug_P(", TIMED OUT ");   Debug_Int(fail);
     Debug_NL(); Debug_Flush();
-    Debug_Str("    all-zero ");  Debug_Int(zero);
-    Debug_Str(", all-0xFF ");    Debug_Int(ones);
-    Debug_Str(", frozen (identical to previous) "); Debug_Int(frozen);
+    Debug_P("    all-zero ");  Debug_Int(zero);
+    Debug_P(", all-0xFF ");    Debug_Int(ones);
+    Debug_P(", frozen (identical to previous) "); Debug_Int(frozen);
     Debug_NL(); Debug_Flush();
 
     if (fail == 0 && zero == 0 && ones == 0 && frozen == 0) {
-        line("    -> PASS, every read was live and plausible");
+        LINE("    -> PASS, every read was live and plausible");
     } else {
-        if (fail)   line("    *** timeouts: the link drops out intermittently.");
-        if (zero)   line("    *** all-zero reads: SDA likely shorted low.");
-        if (ones)   line("    *** all-0xFF reads: SDA likely open.");
-        if (frozen) line("    *** frozen reads: the same bytes came back twice,");
-        if (frozen) line("        so that value was stale, not measured. A live");
-        if (frozen) line("        MPU6050 always jitters in its low bits.");
+        if (fail)   LINE("    *** timeouts: the link drops out intermittently.");
+        if (zero)   LINE("    *** all-zero reads: SDA likely shorted low.");
+        if (ones)   LINE("    *** all-0xFF reads: SDA likely open.");
+        if (frozen) LINE("    *** frozen reads: the same bytes came back twice,");
+        if (frozen) LINE("        so that value was stale, not measured. A live");
+        if (frozen) LINE("        MPU6050 always jitters in its low bits.");
     }
 
     if (ok == 0) {
-        line("    no successful reads -- skipping the noise floor");
+        LINE("    no successful reads -- skipping the noise floor");
         return;
     }
 
-    line("");
-    line("    noise floor at rest (raw LSB; 65.5 LSB = 1 deg/sec)");
+    LINE("");
+    LINE("    noise floor at rest (raw LSB; 65.5 LSB = 1 deg/sec)");
     for (a = 0; a < 3; a++) {
         int32_t spread = (int32_t)vmax[a] - (int32_t)vmin[a];
-        Debug_Str("      gyro ");
-        Debug_Str(a == 0 ? "X" : (a == 1 ? "Y" : "Z"));
-        Debug_KV(": mean", sum[a] / (int32_t)ok);
-        Debug_KV("min", vmin[a]);
-        Debug_KV("max", vmax[a]);
-        Debug_KV("spread", spread);
-        if (spread < GYRODIAG_NOISE_MIN)      Debug_Str(" *** TOO QUIET (frozen?)");
-        else if (spread > GYRODIAG_NOISE_MAX) Debug_Str(" *** TOO NOISY (supply/wiring)");
-        else                                  Debug_Str(" normal");
+        Debug_P("      gyro ");
+        if (a == 0)      Debug_P("X");
+        else if (a == 1) Debug_P("Y");
+        else             Debug_P("Z");
+        Debug_KVF(": mean", sum[a] / (int32_t)ok);
+        Debug_KVF("min", vmin[a]);
+        Debug_KVF("max", vmax[a]);
+        Debug_KVF("spread", spread);
+        if (spread < GYRODIAG_NOISE_MIN)      Debug_P(" *** TOO QUIET (frozen?)");
+        else if (spread > GYRODIAG_NOISE_MAX) Debug_P(" *** TOO NOISY (supply/wiring)");
+        else                                  Debug_P(" normal");
         Debug_NL(); Debug_Flush();
     }
-    line("    (mean is the bias the firmware subtracts; Z's mean is the one");
-    line("     that matters for heading. X/Y means only feed rock detection.)");
+    LINE("    (mean is the bias the firmware subtracts; Z's mean is the one");
+    LINE("     that matters for heading. X/Y means only feed rock detection.)");
 }
 
 // ---------------------------------------------------------------------------
@@ -276,12 +284,12 @@ static void monitor(uint8_t cfg_at_start) {
     // monitor window and bury the one transition that mattered.
     uint8_t  was_failing = 0, was_frozen = 0;
 
-    line("");
-    line("[6] LIVE MONITOR -- wiggle the gyro wires and connectors now.");
-    line("    Only EVENTS print. Silence means the link is holding.");
-    Debug_Str("    running for ");
+    LINE("");
+    LINE("[6] LIVE MONITOR -- wiggle the gyro wires and connectors now.");
+    LINE("    Only EVENTS print. Silence means the link is holding.");
+    Debug_P("    running for ");
     Debug_Int((int32_t)(GYRODIAG_MONITOR_MS / 1000));
-    Debug_Str(" seconds...");
+    Debug_P(" seconds...");
     Debug_NL(); Debug_Flush();
 
     while ((millis() - t0) < GYRODIAG_MONITOR_MS) {
@@ -292,9 +300,9 @@ static void monitor(uint8_t cfg_at_start) {
             have_prev = 0;
             if (!was_failing) {
                 was_failing = 1;
-                Debug_Str("    t=");
+                Debug_P("    t=");
                 Debug_Int((int32_t)(millis() - t0));
-                Debug_Str("ms  READ FAILED -- bus stopped answering");
+                Debug_P("ms  READ FAILED -- bus stopped answering");
                 Debug_NL(); Debug_Flush();
             }
             Timer_WaitMs(20);
@@ -302,9 +310,9 @@ static void monitor(uint8_t cfg_at_start) {
         }
         if (was_failing) {
             was_failing = 0;
-            Debug_Str("    t=");
+            Debug_P("    t=");
             Debug_Int((int32_t)(millis() - t0));
-            Debug_Str("ms  recovered -- reads answering again");
+            Debug_P("ms  recovered -- reads answering again");
             Debug_NL(); Debug_Flush();
         }
 
@@ -316,16 +324,16 @@ static void monitor(uint8_t cfg_at_start) {
             freezes++;
             if (!was_frozen) {
                 was_frozen = 1;
-                Debug_Str("    t=");
+                Debug_P("    t=");
                 Debug_Int((int32_t)(millis() - t0));
-                Debug_Str("ms  FROZEN -- identical bytes twice, value is stale");
+                Debug_P("ms  FROZEN -- identical bytes twice, value is stale");
                 Debug_NL(); Debug_Flush();
             }
         } else if (was_frozen) {
             was_frozen = 0;
-            Debug_Str("    t=");
+            Debug_P("    t=");
             Debug_Int((int32_t)(millis() - t0));
-            Debug_Str("ms  unfrozen -- values changing again");
+            Debug_P("ms  unfrozen -- values changing again");
             Debug_NL(); Debug_Flush();
         }
         for (k = 0; k < 6; k++) prev[k] = buf[k];
@@ -340,18 +348,18 @@ static void monitor(uint8_t cfg_at_start) {
             if (read_config(&pwr, &cfg)) {
                 if (cfg != cfg_at_start || (pwr & 0x40)) {
                     cfg_changes++;
-                    Debug_Str("    t=");
+                    Debug_P("    t=");
                     Debug_Int((int32_t)(millis() - t0));
-                    Debug_Str("ms  CONFIG CHANGED: GYRO_CONFIG now ");
+                    Debug_P("ms  CONFIG CHANGED: GYRO_CONFIG now ");
                     print_hex8(cfg);
                     print_range(cfg);
                     Debug_NL(); Debug_Flush();
-                    line("        *** THE GYRO RESET ITSELF -- POWER FAULT ***");
-                    line("        Readings keep coming but at the wrong scale,");
-                    line("        so every angle from here is wrong while the");
-                    line("        log still looks healthy. This is the fault");
-                    line("        that would make turns land short or long at");
-                    line("        random. Fix the 5V rail and the connectors.");
+                    LINE("        *** THE GYRO RESET ITSELF -- POWER FAULT ***");
+                    LINE("        Readings keep coming but at the wrong scale,");
+                    LINE("        so every angle from here is wrong while the");
+                    LINE("        log still looks healthy. This is the fault");
+                    LINE("        that would make turns land short or long at");
+                    LINE("        random. Fix the 5V rail and the connectors.");
                     cfg_at_start = cfg;   // report each change once
                 }
             }
@@ -359,22 +367,22 @@ static void monitor(uint8_t cfg_at_start) {
         Timer_WaitMs(10);
     }
 
-    line("");
-    Debug_Str("    monitor finished: read failures ");
+    LINE("");
+    Debug_P("    monitor finished: read failures ");
     Debug_Int(fails);
-    Debug_Str(", config resets ");
+    Debug_P(", config resets ");
     Debug_Int(cfg_changes);
-    Debug_Str(", frozen samples ");
+    Debug_P(", frozen samples ");
     Debug_Int(freezes);
     Debug_NL(); Debug_Flush();
     if (!fails && !cfg_changes && !freezes) {
-        line("    -> the gyro link held up the whole time. If the robot still");
-        line("       misbehaves, the gyro connection is not the cause.");
+        LINE("    -> the gyro link held up the whole time. If the robot still");
+        LINE("       misbehaves, the gyro connection is not the cause.");
     } else {
-        line("    -> the link is INTERMITTENT. Solder the joints, add bulk");
-        line("       capacitance at the buck output, and re-run before");
-        line("       chasing any control-loop tuning: no amount of it can");
-        line("       compensate for a sensor that drops out.");
+        LINE("    -> the link is INTERMITTENT. Solder the joints, add bulk");
+        LINE("       capacitance at the buck output, and re-run before");
+        LINE("       chasing any control-loop tuning: no amount of it can");
+        LINE("       compensate for a sensor that drops out.");
     }
 }
 
@@ -384,29 +392,29 @@ void GyroDiag_Run(void) {
 
     Motors_Stop();
 
-    line("");
-    line("========================================");
-    line(" GYRO / I2C CONNECTION DIAGNOSTIC");
-    line(" motors stay off for the whole test");
-    line("========================================");
+    LINE("");
+    LINE("========================================");
+    LINE(" GYRO / I2C CONNECTION DIAGNOSTIC");
+    LINE(" motors stay off for the whole test");
+    LINE("========================================");
 
     check_bus_lines();
 
     if (check_identity()) {
-        line("");
-        line("    initialising the gyro (wake + set +/-500 dps)...");
+        LINE("");
+        LINE("    initialising the gyro (wake + set +/-500 dps)...");
         MPU6050_Init();
         check_config(&cfg);
         check_reads();
         monitor(cfg);
     } else {
-        line("");
-        line("    stopping here: nothing further can be tested until the");
-        line("    device answers. Fix the wiring and re-run this mode.");
+        LINE("");
+        LINE("    stopping here: nothing further can be tested until the");
+        LINE("    device answers. Fix the wiring and re-run this mode.");
     }
 
-    line("");
-    line("GYRO DIAGNOSTIC DONE");
+    LINE("");
+    LINE("GYRO DIAGNOSTIC DONE");
     Debug_Flush();
     for (;;) { }
 }

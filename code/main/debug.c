@@ -82,6 +82,24 @@ void Debug_CSV(int32_t v) {
     tx_push(',');
 }
 
+// Flash-resident equivalents. See the note in debug.h: keeping this text out of
+// SRAM is not an optimisation on a 2 KB part, it is the difference between
+// booting and not.
+void Debug_StrP(const char *flash_str) {
+    char c;
+    while ((c = (char)pgm_read_byte(flash_str)) != 0) {
+        tx_push(c);
+        flash_str++;
+    }
+}
+
+void Debug_KVP(const char *flash_key, int32_t v) {
+    Debug_StrP(flash_key);
+    tx_push('=');
+    Debug_Int(v);
+    tx_push(' ');
+}
+
 uint16_t Debug_Dropped(void) { return s_dropped; }
 
 void Debug_Flush(void) {
@@ -98,4 +116,6 @@ void Debug_KV(const char *key, int32_t v) { (void)key; (void)v; }
 void Debug_CSV(int32_t v) { (void)v; }
 uint16_t Debug_Dropped(void) { return 0; }
 void Debug_Flush(void) {}
+void Debug_StrP(const char *flash_str) { (void)flash_str; }
+void Debug_KVP(const char *flash_key, int32_t v) { (void)flash_key; (void)v; }
 #endif
