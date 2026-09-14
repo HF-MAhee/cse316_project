@@ -36,21 +36,76 @@
 // ---------------------------------------------------------------------------
 #define BUILD_MODE 3
 
-// Decodes MCUCSR at boot. This is the definitive answer to "did it reset, and
-// why" -- guesswork from log gaps is not needed once this prints. BORF set
-// means brown-out: the supply sagged below the MCU threshold, which is a
-// power/wiring fault, not a firmware bug.
+// ---------------------------------------------------------------------------
+//  Reset forensics
+// ---------------------------------------------------------------------------
+// Variables in .noinit are NOT zeroed by the C startup code, so they keep their
+// values across a RESET -- but they are lost if VCC actually falls far enough
+// for SRAM to forget. That makes them a direct physical test of WHICH kind of
+// fault happened, which the MCUCSR flags alone cannot tell you:
+//
+//   magic intact  -> SRAM held its charge -> VCC never collapsed.
+//                    The reset came from the brown-out detector or the RESET
+//                    pin. Suspect a supply DIP or electrical noise.
+//   magic lost    -> SRAM was wiped -> VCC really did fall to near zero.
+//                    That is a BROKEN CONNECTION, not a dip.
+#define BOOT_MAGIC 0xB007
+static uint16_t s_boot_magic  __attribute__((section(".noinit")));
+static uint16_t s_boot_count  __attribute__((section(".noinit")));
+static uint8_t  s_prev_flags  __attribute__((section(".noinit")));
+
 static void report_reset_cause(void) {
     uint8_t f = MCUCSR;
+    uint8_t ram_survived;
     MCUCSR = 0;                     // must clear, or flags accumulate forever
+
+    ram_survived = (s_boot_magic == BOOT_MAGIC) ? 1 : 0;
+    if (ram_survived) {
+        s_boot_count++;
+    } else {
+        s_boot_magic = BOOT_MAGIC;
+        s_boot_count = 1;
+        s_prev_flags = 0;
+    }
+
     Debug_P("RESET:");
     if (f & (1 << PORF))  Debug_P(" power-on");
-    if (f & (1 << EXTRF)) Debug_P(" external");
+    if (f & (1 << EXTRF)) Debug_P(" EXTERNAL(reset-pin)");
     if (f & (1 << BORF))  Debug_P(" BROWNOUT");
     if (f & (1 << WDRF))  Debug_P(" watchdog");
     if (f == 0)           Debug_P(" (none/unknown)");
     Debug_KVF("  raw", f);
+    Debug_KVF("boot#", (int32_t)s_boot_count);
     Debug_NL();
+
+    if (s_boot_count == 1) {
+        Debug_P("  cold start (SRAM was empty) -- baseline, nothing to read"
+                " into this one\r\n");
+    } else if (ram_survived) {
+        Debug_P("  *** UNEXPECTED RESET #");
+        Debug_Int((int32_t)s_boot_count);
+        Debug_P(" ***\r\n");
+        Debug_P("  SRAM SURVIVED, so VCC did NOT collapse. This was the\r\n");
+        Debug_P("  brown-out detector or the RESET pin, not a broken wire.\r\n");
+        if (f & (1 << EXTRF)) {
+            Debug_P("  EXTERNAL flag -> the RESET PIN was pulled low. On a\r\n");
+            Debug_P("  bare build that usually means no 10k pull-up + 100nF on\r\n");
+            Debug_P("  pin 9, or a dangling ISP cable picking up noise.\r\n");
+        } else if (f & (1 << BORF)) {
+            Debug_P("  BROWNOUT flag -> the rail dipped below the BOD\r\n");
+            Debug_P("  threshold. Decoupling and bulk capacitance.\r\n");
+        }
+        Debug_KVF("  previous boot's flags", (int32_t)s_prev_flags);
+        Debug_NL();
+    } else {
+        Debug_P("  *** SRAM WAS WIPED -> VCC actually fell to near zero ***\r\n");
+        Debug_P("  That is an INTERMITTENT POWER CONNECTION, not a dip:\r\n");
+        Debug_P("  battery holder contacts, a VCC/GND jumper, or the buck\r\n");
+        Debug_P("  converter dropping out. Note the boot# restarting at 1\r\n");
+        Debug_P("  every time is itself the evidence.\r\n");
+    }
+    Debug_Flush();
+    s_prev_flags = f;
 }
 
 static void telemetry_header(void) {
