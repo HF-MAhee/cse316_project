@@ -38,6 +38,18 @@ const drive_debug_t *Drive_Debug(void);
 void          Drive_Begin(void);            // kickstart + reset controller
 void          Drive_Tick(int16_t gyro_rate);// one control step
 void          Drive_Stop(void);
+
+// BLOCKING straight drive for a fixed duration, held on the gyro alone (no
+// sonar). This is the original firmware's straight-line autocorrect: P on
+// accumulated heading error plus D on rate, so the chassis returns to the
+// heading it started on instead of merely resisting rotation. Includes the
+// breakaway kick, and integrates throughout so no rotation goes uncounted.
+//
+// start_offset_raw is where the chassis ALREADY sits relative to the heading
+// it should hold, in raw LSB*ms, positive = rotated LEFT of it. Feed a turn's
+// turn_result_t.residual_raw in here and the leg steers that leftover out,
+// instead of every turn's error accumulating into the next leg.
+void          Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw);
 center_mode_t Drive_Mode(void);
 int16_t       Drive_LastCorrection(void);
 #endif

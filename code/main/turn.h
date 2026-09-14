@@ -54,6 +54,15 @@ typedef struct {
     // ~40 degrees out, so the budget was one bad turn from running dry.
     int32_t final_error_tenths;
     uint8_t converged;
+
+    // The same leftover error, but expressed in the NEXT leg's frame and in
+    // raw LSB*ms: how far the chassis sits from the heading it should now
+    // hold, positive = rotated LEFT of it. Turn_Execute() zeroes the heading
+    // accumulator when it finishes, so without carrying this forward every
+    // turn's residual is simply discarded and accumulates into the path.
+    // Hand it straight to Drive_StraightHold() -- the direction sign is
+    // already folded in here so call sites cannot get it backwards.
+    int32_t residual_raw;
 } turn_result_t;
 
 // Blocking closed-loop pivot. Sonar is meaningless while rotating, so the

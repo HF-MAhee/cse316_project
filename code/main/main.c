@@ -178,6 +178,7 @@ int main(void) {
 #elif BUILD_MODE == 5
     {
         uint8_t leg;
+        int32_t carry = 0;      // previous turn's leftover, in this leg's frame
         Timer_WaitMs(STARTUP_DELAY_MS);
         Debug_Str("SQUARE TEST: ");
         Debug_Int(SQUARE_SIDES);
@@ -187,23 +188,29 @@ int main(void) {
             turn_result_t r;
 
             Debug_Str("leg "); Debug_Int(leg + 1); Debug_Str(" forward\r\n");
-            // Breakaway kick, same idea as Drive_Begin(): the motors will not
-            // start moving from rest at cruise PWM alone.
-            Motors_Forward(KICK_PWM, KICK_PWM);
-            Timer_WaitMs(KICK_MS);
-            Motors_Forward(SQUARE_TEST_PWM, SQUARE_TEST_PWM);
-            Timer_WaitMs(SQUARE_LEG_MS - KICK_MS);
-            Motors_Stop();
+            // Gyro heading hold, NOT open-loop. Two motors at equal PWM never
+            // track straight (gearbox, tyre and friction mismatch), which is
+            // why the original firmware had a straight-line autocorrect at
+            // all. `carry` feeds the previous turn's residual in so the leg
+            // steers it out rather than baking it into the path.
+            Drive_StraightHold(SQUARE_TEST_PWM, SQUARE_LEG_MS, carry);
             Timer_WaitMs(SQUARE_TURN_SETTLE_MS);
 
             Debug_Str("leg "); Debug_Int(leg + 1); Debug_Str(" turn\r\n");
             Turn_90(TURN_RIGHT, &r);
             Debug_KV("ang10", r.achieved_tenths);
             Debug_KV("err10", r.initial_error_tenths);
+            Debug_KV("fin10", r.final_error_tenths);
+            Debug_KV("conv", r.converged);
             Debug_KV("nudges", r.nudges_used);
             Debug_KV("peak", r.peak_rate);
             Debug_KV("wrong", r.wrong_way);
             Debug_NL();
+
+            // Hand this turn's leftover to the next leg instead of discarding
+            // it -- Turn_Execute() zeroes the accumulator, so without this the
+            // residual from every corner accumulates into the square.
+            carry = r.residual_raw;
         }
 
         Debug_Str("SQUARE TEST DONE\r\n");
@@ -372,16 +379,12 @@ int main(void) {
                     Debug_KV("wrong", r.wrong_way);
                     Debug_NL();
 
-                    // Open-loop forward leg, same kick+cruise shape and the
-                    // same fixed speed/duration as the Mode 5 square test --
-                    // this is the same "prove the drive works" leg, just
-                    // triggered by an obstacle instead of a fixed repeat count.
+                    // Forward leg under gyro heading hold, same as Mode 5's
+                    // legs, carrying the turn's leftover error in so it gets
+                    // steered out rather than baked into the heading.
                     Debug_Str("MODE7: forward leg\r\n");
-                    Motors_Forward(KICK_PWM, KICK_PWM);
-                    Timer_WaitMs(KICK_MS);
-                    Motors_Forward(SQUARE_TEST_PWM, SQUARE_TEST_PWM);
-                    Timer_WaitMs(SQUARE_LEG_MS - KICK_MS);
-                    Motors_Stop();
+                    Drive_StraightHold(SQUARE_TEST_PWM, SQUARE_LEG_MS,
+                                       r.residual_raw);
 
                     Debug_Str("MODE7 DONE\r\n");
                     state = 2;

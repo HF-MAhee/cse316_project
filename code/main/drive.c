@@ -1,6 +1,7 @@
 #include "config.h"
 #include "drive.h"
 #include "motors.h"
+#include "mpu6050.h"
 #include "sonar.h"
 #include "heading.h"
 #include "timer.h"
@@ -57,6 +58,77 @@ static int16_t clamp16(int16_t v, int16_t lo, int16_t hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+// One gyro sample on an exact HOLD_TICK_MS schedule, integrating as it goes.
+// Returns the bias-corrected rate so the D term does not need a second read.
+static int16_t hold_sample(uint32_t *next_ms) {
+    gyro_xyz_t g;
+    while ((int32_t)(millis() - *next_ms) < 0) { /* wait for the slot */ }
+    MPU6050_ReadAll(&g);
+    Heading_Add(g.z, HOLD_TICK_MS);
+    Motion_Update(&g);
+    *next_ms += HOLD_TICK_MS;
+    return Gyro_Rate(g.z);
+}
+
+void Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw) {
+    uint32_t t0      = millis();
+    uint32_t next_ms = t0 + HOLD_TICK_MS;
+    int32_t  worst   = 0;      // largest |heading error| seen, raw
+
+    Heading_Reset();
+
+    // Breakaway kick. Tracked, unlike Drive_Begin()'s -- both wheels forward
+    // together barely yaws the chassis, but counting it costs nothing and
+    // keeps the leg's heading frame honest from the first millisecond.
+    Motors_Forward(KICK_PWM, KICK_PWM);
+    while ((millis() - t0) < KICK_MS) hold_sample(&next_ms);
+
+    while ((millis() - t0) < ms) {
+        int16_t rate = hold_sample(&next_ms);
+        // Positive error = rotated LEFT of the target heading, and positive
+        // corr steers RIGHT, so both terms take a positive coefficient --
+        // same sign convention as Drive_Tick().
+        int32_t err_raw   = Heading_Raw() + start_offset_raw;
+        int32_t err_deg10 = (err_raw * 10L) / GYRO_LSB_MS_PER_DEGREE;
+        int16_t corr;
+        int16_t l, r;
+
+        if (err_raw > worst)  worst =  err_raw;
+        if (-err_raw > worst) worst = -err_raw;
+
+        corr = (int16_t)(((int32_t)HOLD_KP_NUM * err_deg10) / HOLD_KP_DEN);
+        corr = (int16_t)(corr + (((int32_t)WALL_KD_NUM * rate) / WALL_KD_DEN));
+        corr = clamp16(corr, -WALL_MAX_CORRECTION, WALL_MAX_CORRECTION);
+
+        l = (int16_t)pwm + corr;
+        r = (int16_t)pwm - corr;
+        // Same floor preservation as Drive_Tick(): lift both rather than
+        // clipping one, so the differential survives.
+        if (l < MOTOR_MIN_PWM) { r += (MOTOR_MIN_PWM - l); l = MOTOR_MIN_PWM; }
+        if (r < MOTOR_MIN_PWM) { l += (MOTOR_MIN_PWM - r); r = MOTOR_MIN_PWM; }
+        l = clamp16(l, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+        r = clamp16(r, MOTOR_MIN_PWM, MOTOR_MAX_PWM);
+
+        s_dbg.error_cm  = 0;
+        s_dbg.wall_term = 0;
+        s_dbg.gyro_term = corr;
+        s_dbg.corr      = corr;
+        s_dbg.pwm_l     = (uint8_t)l;
+        s_dbg.pwm_r     = (uint8_t)r;
+        s_dbg.branch    = BRANCH_NORMAL;
+        Motors_Forward((uint8_t)l, (uint8_t)r);
+    }
+
+    Motors_Stop();
+
+    // How well the leg actually tracked. off10 is where it finished relative
+    // to the heading it was holding; max10 is the worst excursion on the way.
+    Debug_Str("  HOLD ");
+    Debug_KV("off10", ((Heading_Raw() + start_offset_raw) * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_KV("max10", (worst * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_NL();
 }
 
 void Drive_Tick(int16_t gyro_rate) {

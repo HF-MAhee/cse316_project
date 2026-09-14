@@ -190,6 +190,9 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
         int32_t left = target - abs32(Heading_Raw());
         res->final_error_tenths = (left * 10L) / GYRO_LSB_MS_PER_DEGREE;
         res->converged = (abs32(left) <= deadband) ? 1 : 0;
+        // Undershooting a RIGHT turn leaves the chassis LEFT of where it
+        // should point (positive); undershooting a LEFT turn leaves it right.
+        res->residual_raw = (dir == TURN_RIGHT) ? left : -left;
     }
 
     // Direction check. Convention: positive gyro Z = turning LEFT, so a right
@@ -239,6 +242,8 @@ void Turn_180(turn_result_t *res) {
     res->coast_ms             = (a.coast_ms > b.coast_ms) ? a.coast_ms : b.coast_ms;
     res->final_error_tenths   = a.final_error_tenths + b.final_error_tenths;
     res->converged            = a.converged & b.converged;
+    res->residual_raw         = b.residual_raw;   // only the last turn's frame
+                                                  // is still current
 #else
     Turn_Execute(180, TURN_RIGHT, res);
 #endif

@@ -218,6 +218,28 @@
 // straight into the other.
 #define WALL_EMERGENCY_CM      8
 
+// GYRO HEADING HOLD for timed straight legs (Modes 5 and 7).
+// This is the straight-line autocorrect from the original single-file
+// firmware brought forward: P on ACCUMULATED heading error plus D on rate.
+// The wall-centring controller cannot do this job -- with no valid sonar it
+// falls into CENTER_GYRO_ONLY, where error_cm is 0, so only the rate term
+// survives. That damps rotation but never returns to the original heading:
+// drift 10 degrees, stop rotating, and the correction goes to zero with the
+// robot still 10 degrees off.
+//
+// Kp is in PWM counts per TENTH of a degree. 1/8 = 1.25 counts per degree,
+// which reproduces the original algorithm's authority: it used
+// heading_accum/2600 on raw LSB at a 10ms loop, and one degree is 65500
+// LSB*ms, so 65500/26000 = 2.5 counts per degree of DIFFERENTIAL. This
+// controller is symmetric (base +/- corr), so the differential is 2*corr and
+// 1.25 per degree matches.
+//
+// D reuses WALL_KD_NUM/WALL_KD_DEN: same chassis, and that value was already
+// corrected from /120 to /65 against measured crash data.
+#define HOLD_TICK_MS           10   // matches the original autocorrect loop
+#define HOLD_KP_NUM            1
+#define HOLD_KP_DEN            8
+
 // WALL-STUCK RECOVERY.
 // The ramped emergency steer above still drives BOTH wheels forward -- it
 // only varies the split. If a chassis corner physically catches the wall
