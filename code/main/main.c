@@ -12,6 +12,7 @@
 #include "turn.h"
 #include "maze.h"
 #include "debug.h"
+#include "gyrodiag.h"
 
 // ---------------------------------------------------------------------------
 //  Build mode. Work through these in order -- each proves one phase on
@@ -30,6 +31,8 @@
 //    7 = single obstacle-avoidance cycle -- wall-centred drive straight until
 //        the front is blocked, stop, turn right 90, then drive forward
 //        open-loop for one fixed leg. One cycle, then halts (not a loop).
+//    8 = gyro / I2C connection diagnostic -- motors off, plain-language
+//        verdicts, then a live monitor to catch an intermittent link
 // ---------------------------------------------------------------------------
 #define BUILD_MODE 3
 
@@ -139,6 +142,15 @@ int main(void) {
 
     Debug_Str("\r\n=== AGV maze solver ===\r\n");
     report_reset_cause();
+
+#if BUILD_MODE == 8
+    // Deliberately BEFORE MPU6050_Init() and Gyro_CalibrateFull(). Calibration
+    // is 500 reads on the unprotected I2C path, so on a dead bus the firmware
+    // hangs there and never reaches a diagnostic placed later. This runs on a
+    // cold bus, does its own init, and never returns. The reset cause above is
+    // printed first because BROWNOUT is the prime suspect for a flaky gyro.
+    GyroDiag_Run();
+#endif
 
     MPU6050_Init();
     Debug_Str("calibrating gyro, hold still...\r\n");

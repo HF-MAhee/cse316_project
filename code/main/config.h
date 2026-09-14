@@ -509,6 +509,21 @@
 // for Mode 3 runs, where it would interleave with corridor telemetry.
 #define TURN_TRACE               1
 
+// Mode 8: gyro / I2C connection diagnostic.
+// Bounded TWI wait, used ONLY by I2C_ReadRegs() on the diagnostic path. One
+// byte at 100 kHz is ~90us, so 5ms is enormously generous -- if it expires the
+// bus really has stopped answering.
+#define I2C_TIMEOUT_US           5000UL
+#define GYRODIAG_READS           200    // reliability + noise-floor samples
+#define GYRODIAG_MONITOR_MS      60000UL// live monitor window
+#define GYRODIAG_CHECK_MS        250    // config re-verify interval during it
+// A healthy MPU6050 lying still still jitters by this much on one axis. ZERO
+// spread means the value is frozen -- stale data rather than a live read, the
+// signature of a half-dead bus. A spread far above the ceiling means
+// electrical noise on the supply or the signal lines.
+#define GYRODIAG_NOISE_MIN       5
+#define GYRODIAG_NOISE_MAX       400
+
 // Mode 6: dedicated turn debugging. Repeats a pivot with a pause after each
 // one so the physical angle can be measured and written down, and streams the
 // raw yaw rate through the whole turn so the angular-velocity profile can be
