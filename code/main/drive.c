@@ -6,6 +6,7 @@
 #include "heading.h"
 #include "timer.h"
 #include "debug.h"
+#include "power.h"
 
 static center_mode_t s_mode = CENTER_GYRO_ONLY;
 static int16_t       s_last_corr = 0;
@@ -46,6 +47,11 @@ void Drive_Begin(void) {
             uint8_t p = (uint8_t)(MOTOR_MIN_PWM +
                 (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * el) / KICK_MS));
             Motors_Forward(p, p);
+            // Sample the rail HERE, densely. The brown-out dip lasts a couple
+            // of milliseconds, so the once-per-20ms tick sampler would usually
+            // miss it entirely -- and this loop is exactly where the current
+            // spike that causes it happens. One conversion is ~0.1 ms.
+            Power_Task();
         }
     }
 #else

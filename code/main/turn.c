@@ -6,6 +6,7 @@
 #include "timer.h"
 #include "sonar.h"
 #include "debug.h"
+#include "power.h"
 
 static int32_t abs32(int32_t v) { return (v < 0) ? -v : v; }
 
@@ -96,6 +97,10 @@ static void pulse_ramped(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_ms
     while ((el = millis() - t0) < ms) {
         Motors_Pivot(cw, (uint8_t)(MOTOR_MIN_PWM +
             (((uint32_t)(pwm - MOTOR_MIN_PWM) * el) / ms)));
+        // Dense rail sampling through the pivot kick -- the single largest
+        // current draw in the firmware, and where every logged brown-out hit.
+        // The per-tick sampler is far too slow to catch a dip this brief.
+        Power_Task();
         turn_sample(next_ms);
     }
 }

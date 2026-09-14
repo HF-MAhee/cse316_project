@@ -13,6 +13,7 @@
 #include "maze.h"
 #include "debug.h"
 #include "gyrodiag.h"
+#include "power.h"
 
 // ---------------------------------------------------------------------------
 //  Build mode. Work through these in order -- each proves one phase on
@@ -60,6 +61,26 @@ static uint16_t s_boot_magic  __attribute__((section(".noinit")));
 static uint16_t s_boot_count  __attribute__((section(".noinit")));
 static uint8_t  s_prev_flags  __attribute__((section(".noinit")));
 
+// Was the robot MOVING when the last reset hit?
+//
+// This is the difference between "restarted cleanly" and the reported symptom
+// that everything after an unexpected reset was undefined. A reset does not
+// return the robot to the start line -- it leaves it at an unknown position and
+// heading, maybe still coasting -- so re-running the mode from scratch drives
+// blind from a pose the firmware has no idea about. Worse, the startup gyro
+// calibration then runs on a chassis that may still be rotating, which poisons
+// the heading zero for the entire next run.
+//
+// Kept in .noinit so it survives the reset. Only trustworthy when the boot
+// magic also survived; a real power cycle wipes both and reads as a cold start.
+#define RUN_IDLE   0x00
+#define RUN_MOVING 0x5A            // distinctive, so uninitialised RAM is
+                                   // unlikely to imitate it
+static uint8_t  s_run_state   __attribute__((section(".noinit")));
+
+// Set once report_reset_cause() has decided the previous boot died mid-motion.
+static uint8_t  s_unsafe_restart = 0;
+
 static void report_reset_cause(void) {
     uint8_t f = MCUCSR;
     uint8_t ram_survived;
@@ -68,10 +89,14 @@ static void report_reset_cause(void) {
     ram_survived = (s_boot_magic == BOOT_MAGIC) ? 1 : 0;
     if (ram_survived) {
         s_boot_count++;
+        // The run-state flag is only meaningful when SRAM held, because that is
+        // the only case where the previous boot actually wrote it.
+        if (s_run_state == RUN_MOVING) s_unsafe_restart = 1;
     } else {
         s_boot_magic = BOOT_MAGIC;
         s_boot_count = 1;
         s_prev_flags = 0;
+        s_run_state  = RUN_IDLE;     // cold start: nothing was in progress
     }
 
     Debug_P("RESET:");
@@ -102,6 +127,13 @@ static void report_reset_cause(void) {
             Debug_P("  threshold. Decoupling and bulk capacitance.\r\n");
         }
         Debug_KVF("  previous boot's flags", (int32_t)s_prev_flags);
+        Debug_NL();
+        if (s_unsafe_restart) {
+            Debug_P("  *** AND THE ROBOT WAS MOVING WHEN IT HAPPENED ***\r\n");
+            Debug_P("  So its position and heading are now unknown, and it may\r\n");
+            Debug_P("  still have been coasting through the gyro calibration.\r\n");
+            Debug_P("  There is no safe way to carry on from here.\r\n");
+        }
         Debug_NL();
     } else {
         Debug_P("  *** SRAM WAS WIPED -> VCC actually fell to near zero ***\r\n");
@@ -239,6 +271,8 @@ static void deadend_trace(uint32_t t0, uint8_t phase, int16_t rate) {
     Debug_CSV(d->pwm_r);
     Debug_CSV(rate);
     Debug_CSV((Heading_Raw() * 10L) / GYRO_LSB_MS_PER_DEGREE);
+    Debug_CSV((int32_t)Power_LastMv());
+    Debug_CSV((int32_t)Power_MinMv());
     Debug_Int(Debug_Dropped());
     Debug_NL();
 #else
@@ -251,7 +285,7 @@ static void deadend_trace_header(void) {
     Debug_P("# ---- MODE 10 approach trace ----------------------------\r\n");
     Debug_Flush();
     Debug_P("# T,ms,ph,L,F,R,Fraw,lok,rok,tcF,tcS,vStop,vSlow,gate,md,br,"
-            "err,wt,gt,corr,pL,pR,rate,hdg10,drop\r\n");
+            "err,wt,gt,corr,pL,pR,rate,hdg10,vcc,vmin,drop\r\n");
     Debug_Flush();
     Debug_P("#   ph   1=cruise 2=creep\r\n");
     Debug_P("#   L,F,R   median cm;  Fraw  unfiltered front (999=no echo)\r\n");
@@ -286,6 +320,20 @@ static void deadend_trace_header(void) {
             " limits\r\n");
     Debug_P("#   rate    raw yaw LSB (65.5 per deg/s); hdg10 heading, 0.1 deg"
             "\r\n");
+    Debug_Flush();
+    Debug_P("#   vcc     supply mV this tick; vmin lowest since the run began."
+            "\r\n");
+    Debug_P("#           Bandgap-derived, so the ABSOLUTE value may be ~10%"
+            " out --\r\n");
+    Debug_P("#           what matters is the DROP. A vmin far below the idle"
+            "\r\n");
+    Debug_P("#           reading printed at boot means the rail is collapsing"
+            "\r\n");
+    Debug_P("#           under motor current, which is what resets the MCU."
+            "\r\n");
+    Debug_P("#           Below ");
+    Debug_Int((int32_t)POWER_MIN_SAFE_MV);
+    Debug_P(" mV the part is out of spec at 16 MHz.\r\n");
     Debug_P("#   drop    telemetry bytes lost. If this climbs, raise"
             " DEADEND_TRACE_EVERY\r\n");
     Debug_Flush();
@@ -589,6 +637,29 @@ static void deadend_sequence(void) {
             Debug_P("    a side wall, or the chassis is wedged in the corner.\r\n");
         }
     }
+    // ---- supply verdict --------------------------------------------------
+    // Printed on every run, success included. The runs that SURVIVE are the
+    // ones that say how much margin is left: a minimum that sits just above
+    // POWER_MIN_SAFE_MV is a run that got lucky, not a run that was fine.
+    Debug_P("[7] supply: min ");
+    Debug_Int((int32_t)Power_MinMv());
+    Debug_P(" mV during the run");
+    if (Power_SagSeen()) {
+        Debug_P("\r\n    *** WENT BELOW ");
+        Debug_Int((int32_t)POWER_MIN_SAFE_MV);
+        Debug_P(" mV -- out of spec for 16 MHz. This run\r\n");
+        Debug_P("    came close to the brown-out that killed the others."
+                " Fix the\r\n");
+        Debug_P("    supply before trusting any result.\r\n");
+    } else {
+        Debug_P(", stayed in spec\r\n");
+    }
+    Debug_Flush();
+
+    // Clean finish: clear the in-motion flag so the next boot is treated as a
+    // normal start rather than an interrupted run.
+    s_run_state = RUN_IDLE;
+
     Debug_P("MODE10 DONE\r\n");
     Debug_Flush();
     Motors_Stop();
@@ -621,10 +692,41 @@ int main(void) {
     Timer_Init();          // before sei() so millis() is live immediately
     I2C_Init();
     Sonar_Init();
+    Power_Init();
     sei();
 
     Debug_P("\r\n=== AGV maze solver ===\r\n");
     report_reset_cause();
+
+    // Idle rail reading, taken before anything draws current. This is the
+    // baseline every later sag figure is measured against, so it is worth a
+    // line of its own.
+    Debug_KVF("VCC idle mV", (int32_t)Power_VccMv());
+    Debug_P(" (bandgap-derived: trust the CHANGE, not the absolute)\r\n");
+    Debug_Flush();
+
+#if HALT_ON_UNSAFE_RESTART
+    if (s_unsafe_restart) {
+        // Refuse to drive. See HALT_ON_UNSAFE_RESTART in config.h -- carrying
+        // on from an unknown pose is what turned one brown-out into a whole run
+        // of undefined behaviour.
+        Motors_Stop();
+        Debug_P("*** HALTED: will not restart a run that was interrupted"
+                " mid-motion.\r\n");
+        Debug_P("    The robot is not where the firmware would assume, so"
+                " driving\r\n");
+        Debug_P("    on would be guesswork. Fix the supply (this was a"
+                " brown-out),\r\n");
+        Debug_P("    then CYCLE THE POWER for a few seconds -- that clears"
+                " SRAM and\r\n");
+        Debug_P("    gives a clean cold start. Set HALT_ON_UNSAFE_RESTART to 0"
+                "\r\n");
+        Debug_P("    to override, but expect undefined behaviour if you do."
+                "\r\n");
+        Debug_Flush();
+        for (;;) { Motors_Stop(); }
+    }
+#endif
 
 #if BUILD_MODE == 8
     // Deliberately BEFORE MPU6050_Init() and Gyro_CalibrateFull(). Calibration
@@ -637,7 +739,21 @@ int main(void) {
 
     MPU6050_Init();
     Debug_P("calibrating gyro, hold still...\r\n");
-    Gyro_CalibrateFull();
+    if (!Gyro_CalibrateFull()) {
+        // Previously silent. A rejected calibration means the bias was measured
+        // while the chassis was moving, so the heading zero -- and therefore
+        // every turn and every straight-line correction in the run -- is built
+        // on a wrong number.
+        Debug_P("*** GYRO CALIBRATION NOT VALIDATED: the chassis would not"
+                " hold still.\r\n");
+        Debug_P("    The offsets below were averaged DURING MOTION, so the"
+                " heading\r\n");
+        Debug_P("    zero is wrong and every turn this run inherits the"
+                " error.\r\n");
+        Debug_P("    Let the robot settle and restart before trusting"
+                " anything.\r\n");
+        Debug_Flush();
+    }
     Debug_KVF("offZ", Gyro_GetOffset());
     Debug_KVF("offX", Gyro_GetOffsetX());
     Debug_KVF("offY", Gyro_GetOffsetY());
@@ -1011,6 +1127,10 @@ int main(void) {
 
         Sonar_Task();                          // exactly one ping per tick
 
+        // Supply rail, every tick. The dip that resets the MCU lasts a few
+        // milliseconds, so anything slower simply never observes it.
+        Power_Task();
+
         // ---- behaviour ---------------------------------------------------
 #if BUILD_MODE == 0 || BUILD_MODE == 4
         // Mode 4: motors permanently off. Sonar/heading above still run every
@@ -1110,6 +1230,11 @@ int main(void) {
             uint8_t  forced    = 0;
 
             if (phase == DEP_WAIT && millis() - run_start > STARTUP_DELAY_MS) {
+                // Mark the chassis as in motion BEFORE the first motor command,
+                // so a reset during the very first kick is still caught. Lives
+                // in .noinit, so it survives the reset that matters.
+                s_run_state = RUN_MOVING;
+                Power_ResetMin();        // baseline the sag from here
                 Drive_Begin();
                 drive_start = millis();      // time the DRIVE, not the boot
                 phase = DEP_CRUISE;

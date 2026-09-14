@@ -12,7 +12,7 @@ CFLAGS  = -mmcu=$(MCU) -DF_CPU=$(F_CPU) -Os -std=gnu99 -Wall -Wextra \
           -MMD -MP
 LDFLAGS = -mmcu=$(MCU) -Wl,--gc-sections
 
-SRC = main.c timer.c i2c.c mpu6050.c heading.c motors.c sonar.c drive.c turn.c maze.c debug.c gyrodiag.c
+SRC = main.c timer.c i2c.c mpu6050.c heading.c motors.c sonar.c drive.c turn.c maze.c debug.c gyrodiag.c power.c
 OBJ = $(SRC:.c=.o)
 TARGET = agv
 

@@ -865,6 +865,44 @@
 #define DEADEND_APPROACH_MAX_MS 20000UL
 
 // ---------------------------------------------------------------------------
+//  15c. SUPPLY MONITORING AND RESET SAFETY
+// ---------------------------------------------------------------------------
+// Nominal internal bandgap, millivolts. Datasheet says 1.22 V typical with a
+// 1.15-1.35 V spread, so the ABSOLUTE voltage this yields can be ~10% out.
+// That does not matter for what it is used for: the error is a fixed scale
+// factor, so the SAG (idle reading minus minimum reading) is accurate even
+// when the absolute figure is not. To calibrate a board, measure VCC with a
+// meter while it idles and scale this until the reported figure matches.
+#define POWER_BANDGAP_MV       1220
+
+// The ATmega32A datasheet requires VCC >= 4.5 V to run at 16 MHz. Below this
+// the part is out of its safe operating area: it may keep executing, but
+// timing margins are gone and behaviour is no longer guaranteed. Any reading
+// under this is a real fault, not a preference.
+#define POWER_MIN_SAFE_MV      4500
+
+// How often to sample the rail. Every control tick is fine -- a conversion is
+// ~0.1 ms at 125 kHz -- and sampling often is the point: the dip that resets
+// the MCU lasts a few milliseconds, so a slow sampler simply never sees it.
+#define POWER_SAMPLE_EVERY     1
+
+// REFUSE TO AUTO-RESTART AFTER A RESET THAT INTERRUPTED A RUN.
+//
+// This is the fix for "after the reset, the rest of the behaviour was just
+// undefined". A reset does not put the robot back at the start line: it leaves
+// the chassis somewhere unknown in the maze, at an unknown heading, possibly
+// still coasting. Restarting the mode from scratch then drives blind from that
+// unknown pose -- and worse, Gyro_CalibrateFull() runs while the chassis may
+// still be moving, which poisons the gyro zero for the whole next run.
+//
+// With this set, a boot that finds the previous boot died mid-motion (its
+// .noinit run-state flag still says MOVING, and SRAM survived so that flag is
+// trustworthy) halts with the motors off and says so, instead of setting off
+// again. Cycling the power for a few seconds clears SRAM and gives a normal
+// cold start, so recovery is deliberate rather than automatic.
+#define HALT_ON_UNSAFE_RESTART 1
+
+// ---------------------------------------------------------------------------
 //  16. DEBUG
 // ---------------------------------------------------------------------------
 #define DEBUG_ENABLED          1

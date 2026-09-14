@@ -18,7 +18,16 @@
 // ============================================================================
 
 // --- bias / calibration ---
-void    Gyro_CalibrateFull(void);    // long calibration, power-up
+// Long calibration, power-up. Returns 1 if the chassis held still long enough
+// for the bias to be VALIDATED, 0 if every attempt was rejected and an
+// unchecked average was used instead.
+//
+// A 0 is serious and must be reported, not ignored: it means the bias was
+// measured while the robot was moving, so the heading zero is wrong and every
+// turn and straight-line correction for the rest of the run inherits that
+// error. The usual cause is starting up on a chassis that is still coasting --
+// e.g. immediately after a brown-out reset mid-maneuver.
+uint8_t Gyro_CalibrateFull(void);
 uint8_t Gyro_CalibrateQuick(void);   // short re-calibration between moves.
                                      // Returns 1 on success, 0 if the chassis
                                      // would not hold still (offset unchanged).

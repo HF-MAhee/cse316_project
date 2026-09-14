@@ -53,14 +53,20 @@ static uint8_t calibrate(uint16_t samples) {
     return 1;
 }
 
-void Gyro_CalibrateFull(void) {
+uint8_t Gyro_CalibrateFull(void) {
     uint8_t tries;
     for (tries = 0; tries < GYRO_CAL_RETRIES; tries++) {
-        if (calibrate(GYRO_CAL_SAMPLES_INIT)) return;
+        if (calibrate(GYRO_CAL_SAMPLES_INIT)) return 1;
         Timer_WaitMs(GYRO_SETTLE_MS);
     }
     // All attempts rejected: fall back to an unchecked average so the robot
     // still has *some* offsets rather than zero.
+    //
+    // THE RETURN VALUE MATTERS. This used to be void, so this fallback was
+    // completely silent: every rejection means the chassis would not hold still,
+    // and the bias captured here is therefore measured DURING MOTION and wrong
+    // for the whole run. Every heading, every turn and every straight-line
+    // correction afterwards is built on it. The caller must be able to say so.
     {
         int32_t sum_x = 0, sum_y = 0, sum_z = 0;
         uint16_t i;
@@ -74,6 +80,7 @@ void Gyro_CalibrateFull(void) {
         s_offset_x = sum_x / GYRO_CAL_SAMPLES_INIT;
         s_offset_y = sum_y / GYRO_CAL_SAMPLES_INIT;
     }
+    return 0;                   // offsets exist, but none of them are trusted
 }
 
 uint8_t Gyro_CalibrateQuick(void) {
