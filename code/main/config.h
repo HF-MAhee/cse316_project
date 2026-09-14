@@ -577,6 +577,47 @@
 #define TURNDBG_STILL_LSB        200
 
 // ---------------------------------------------------------------------------
+//  15b. MODE 10: DEAD-END 180
+// ---------------------------------------------------------------------------
+// Drive the corridor centred, treat a front obstacle as a dead end, and turn
+// around -- picking the rotation direction from where the chassis actually
+// sits between the walls.
+//
+// WHY DIRECTION MATTERS. An in-place pivot is NOT symmetric. The chassis
+// rotates about the AXLE, which sits SONAR_TO_AXLE_CM behind the nose, so:
+//   front corners swing  sqrt(15^2 + 8^2) = 17.0 cm from the axle
+//   rear corners swing   sqrt( 7^2 + 8^2) = 10.6 cm from the axle
+// The front corners sweep into the side being turned TOWARDS; the rear corners
+// sweep out the opposite side. The turning side therefore needs ~6.4 cm more
+// free space than the other. If the chassis is hugging the left wall, rotating
+// LEFT drags the wide front corner straight into it, while rotating RIGHT
+// only puts the narrow rear corner there. Hence: turn AWAY from the near wall.
+#define PIVOT_FRONT_RADIUS_CM  17   // sqrt(SONAR_TO_AXLE^2 + (WIDTH/2)^2)
+
+// Free space the pivot needs on the side it rotates into, measured from the
+// chassis flank (which is ROBOT_WIDTH_CM/2 out from the pivot axis) -- i.e.
+// how much the side sonar must be reading for the front corner to clear.
+#define PIVOT_SIDE_NEED_CM     (PIVOT_FRONT_RADIUS_CM - (ROBOT_WIDTH_CM / 2))  // 9 cm
+
+// Only commit to a side when the two walls differ by at least this much. Below
+// it the readings are within sonar noise of each other and "nearer wall" is a
+// coin flip, so DEADEND_TIE_DIR is used instead of chasing the noise.
+#define DEADEND_DECIDE_MARGIN_CM 3
+#define DEADEND_TIE_DIR          TURN_RIGHT
+
+// Drive_Stop() has no active brake: the chassis coasts (~17 cm measured) after
+// the motors cut, so where it STOPS is much closer to the wall than where it
+// DECIDED to stop. The direction rule fixes the lateral clearance problem but
+// does nothing for the front one -- back up first to buy the front corners
+// room. Timed, because there are no encoders.
+#define DEADEND_BACKUP_PWM     90
+#define DEADEND_BACKUP_MS      400
+
+// Ceiling on the approach so a mode-10 run in open space ends rather than
+// driving off forever.
+#define DEADEND_APPROACH_MAX_MS 20000UL
+
+// ---------------------------------------------------------------------------
 //  16. DEBUG
 // ---------------------------------------------------------------------------
 #define DEBUG_ENABLED          1

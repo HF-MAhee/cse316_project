@@ -246,7 +246,7 @@ void Maze_Tick(int16_t gyro_rate) {
         turn_result_t r;
         if (s_do_180) {
             Debug_P("180\r\n");
-            Turn_180(&r);
+            Turn_180(TURN_RIGHT, &r);
         } else {
             if (s_pending_dir == TURN_RIGHT) Debug_P("turn R\r\n");
             else                            Debug_P("turn L\r\n");

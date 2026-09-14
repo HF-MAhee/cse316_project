@@ -227,14 +227,14 @@ void Turn_90(turn_dir_t dir, turn_result_t *res) {
     Turn_Execute(90, dir, res);
 }
 
-void Turn_180(turn_result_t *res) {
+void Turn_180(turn_dir_t dir, turn_result_t *res) {
 #if TURN_180_AS_TWO_90S
     // Two 90s with a settle between usually beats one long sweep: momentum
     // has less time to build, so there is less coast to correct for.
     turn_result_t a, b;
-    Turn_Execute(90, TURN_RIGHT, &a);
+    Turn_Execute(90, dir, &a);
     Timer_WaitMs(200);
-    Turn_Execute(90, TURN_RIGHT, &b);
+    Turn_Execute(90, dir, &b);
     res->achieved_tenths      = a.achieved_tenths + b.achieved_tenths;
     res->nudges_used          = (uint8_t)(a.nudges_used + b.nudges_used);
     res->timed_out            = a.timed_out | b.timed_out;
@@ -248,6 +248,6 @@ void Turn_180(turn_result_t *res) {
     res->residual_raw         = b.residual_raw;   // only the last turn's frame
                                                   // is still current
 #else
-    Turn_Execute(180, TURN_RIGHT, res);
+    Turn_Execute(180, dir, res);
 #endif
 }

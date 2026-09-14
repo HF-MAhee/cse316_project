@@ -36,6 +36,9 @@
 //    9 = open-space obstacle avoidance -- forward on gyro heading hold (no
 //        corridor) until the front sonar sees something, stop, check there is
 //        room, pivot right 90, check again, then one more leg
+//   10 = dead-end turnaround -- wall-centred drive down a corridor until the
+//        front is blocked, then reverse out of the coast, measure both walls,
+//        and pivot 180 AWAY from whichever wall is nearer
 // ---------------------------------------------------------------------------
 #define BUILD_MODE 3
 
@@ -185,6 +188,196 @@ static void telemetry(int16_t gyro_rate, int16_t gx, int16_t gy, uint16_t overru
 #endif
 }
 #endif // BUILD_MODE != 4
+
+#if BUILD_MODE == 10
+// ---------------------------------------------------------------------------
+//  Mode 10 helpers: dead-end turnaround
+// ---------------------------------------------------------------------------
+// Give the filters a full set of fresh samples. Every reading in Mode 10 is
+// taken after either a coast or a reverse, so the history in the medians was
+// gathered somewhere the robot no longer is.
+static void deadend_reprime(uint8_t pings) {
+    uint8_t i;
+    for (i = 0; i < pings; i++) { Sonar_Task(); Timer_WaitMs(CONTROL_TICK_MS); }
+}
+
+// One side wall distance, collapsed to a single number the clearance test can
+// compare. The three sonar outcomes mean very different things and the naive
+// "just read the median" loses the two that matter most:
+//   too close  -> a wall nearer than the sensor can measure. Worst case, so 0.
+//   no echo    -> nothing within range. Best case, so the full range.
+//   otherwise  -> the median, if it is trustworthy; an untrusted reading is
+//                 treated as 0 rather than optimistically believed.
+static uint16_t deadend_side_cm(sonar_id_t id) {
+    if (Sonar_IsTooClose(id))                 return 0;
+    if (Sonar_Latest(id) == SONAR_NO_ECHO)    return SONAR_MAX_RANGE_CM;
+    if (!Sonar_IsValid(id))                   return 0;
+    return Sonar_Median(id);
+}
+
+// "open" reads better than the range ceiling when nothing echoed back, and it
+// keeps a genuine 70 cm reading distinguishable from "nothing out there".
+static void deadend_print_side(uint16_t cm) {
+    if (cm >= SONAR_MAX_RANGE_CM) Debug_P("open");
+    else                          Debug_Int((int32_t)cm);
+}
+
+// The whole dead-end sequence, run once, blocking, after the approach has
+// stopped. Never returns -- Mode 10 is a single-shot test.
+static void deadend_sequence(void) {
+    turn_result_t r;
+    uint16_t l_cm, r_cm, f_cm;
+    turn_dir_t dir;
+    uint16_t chosen_cm;
+
+    Debug_P("MODE10: front blocked -- treating as a DEAD END\r\n");
+    Debug_Flush();
+
+    // ---- where did it ACTUALLY stop? ------------------------------------
+    // Drive_Stop() has no active brake. A measured run coasted ~17 cm past
+    // the point that triggered the stop, so the distance that fired the
+    // trigger is not the distance in front of the robot now.
+    Timer_WaitMs(GYRO_SETTLE_MS);
+    Sonar_Flush();
+    deadend_reprime(12);
+    f_cm = Sonar_Median(SONAR_FRONT);
+    Debug_P("[1] stopped with ");
+    Debug_Int((int32_t)f_cm);
+    Debug_P(" cm ahead after the coast\r\n");
+    Debug_Flush();
+
+    // ---- back out of the coast ------------------------------------------
+    // The direction rule below solves the LATERAL clearance problem only.
+    // The front corners still swing PIVOT_FRONT_RADIUS_CM forward of the
+    // axle, so if the coast left the nose against the wall no choice of
+    // direction helps. Buy that room back before deciding anything.
+    Debug_P("[2] backing off ");
+    Debug_Int((int32_t)DEADEND_BACKUP_MS);
+    Debug_P(" ms to clear the front corners\r\n");
+    Debug_Flush();
+    Motors_SetLeft(DIR_REV, DEADEND_BACKUP_PWM);
+    Motors_SetRight(DIR_REV, DEADEND_BACKUP_PWM);
+    Timer_WaitMs(DEADEND_BACKUP_MS);
+    Motors_Stop();
+    Timer_WaitMs(GYRO_SETTLE_MS);
+
+    // ---- measure both walls from where the pivot will happen -------------
+    Sonar_Flush();
+    deadend_reprime(12);
+    l_cm = deadend_side_cm(SONAR_LEFT);
+    r_cm = deadend_side_cm(SONAR_RIGHT);
+    f_cm = Sonar_Median(SONAR_FRONT);
+
+    Debug_P("[3] walls: L=");
+    deadend_print_side(l_cm);
+    Debug_P("  R=");
+    deadend_print_side(r_cm);
+    Debug_P("  F=");
+    Debug_Int((int32_t)f_cm);
+    Debug_P(" cm\r\n");
+    Debug_Flush();
+
+    // ---- choose the rotation direction ----------------------------------
+    // Rotate AWAY from the nearer wall. See turn.h: the front corners sweep
+    // PIVOT_FRONT_RADIUS_CM into the side being turned towards while the rear
+    // corners only reach ~10.6 cm out the other side, so the turning side
+    // needs roughly 6 cm more room. Hugging the left wall and rotating left
+    // drags the wide front corner into it; rotating right puts only the
+    // narrow rear corner there.
+    if (l_cm > r_cm && (uint16_t)(l_cm - r_cm) >= DEADEND_DECIDE_MARGIN_CM) {
+        dir = TURN_LEFT;                  // more room on the left -> go left
+        chosen_cm = l_cm;
+        Debug_P("[4] nearer the RIGHT wall -> rotating LEFT, away from it\r\n");
+    } else if (r_cm > l_cm && (uint16_t)(r_cm - l_cm) >= DEADEND_DECIDE_MARGIN_CM) {
+        dir = TURN_RIGHT;
+        chosen_cm = r_cm;
+        Debug_P("[4] nearer the LEFT wall -> rotating RIGHT, away from it\r\n");
+    } else {
+        // Within sonar noise of centred. "Nearer wall" is a coin flip here,
+        // so pick the fixed default rather than chase the noise.
+        dir = DEADEND_TIE_DIR;
+        chosen_cm = (dir == TURN_LEFT) ? l_cm : r_cm;
+        Debug_P("[4] centred within ");
+        Debug_Int((int32_t)DEADEND_DECIDE_MARGIN_CM);
+        Debug_P(" cm -- no near wall, using the default direction: ");
+        if (dir == TURN_LEFT) Debug_P("LEFT\r\n");
+        else                  Debug_P("RIGHT\r\n");
+    }
+    Debug_Flush();
+
+    // ---- will the chosen side actually take it? --------------------------
+    if (chosen_cm < PIVOT_SIDE_NEED_CM) {
+        uint16_t other_cm = (dir == TURN_LEFT) ? r_cm : l_cm;
+        if (other_cm >= PIVOT_SIDE_NEED_CM) {
+            // Only reachable from the tie branch, which may have defaulted
+            // into the tighter of two near-equal sides.
+            dir = (dir == TURN_LEFT) ? TURN_RIGHT : TURN_LEFT;
+            chosen_cm = other_cm;
+            Debug_P("    that side is too tight -- switching to the other one\r\n");
+        } else {
+            Debug_P("    NEITHER SIDE HAS ROOM. Need ");
+            Debug_Int((int32_t)PIVOT_SIDE_NEED_CM);
+            Debug_P(" cm clear on the turning side; L=");
+            deadend_print_side(l_cm);
+            Debug_P(" R=");
+            deadend_print_side(r_cm);
+            Debug_P("\r\n");
+            Debug_P("    Refusing the pivot -- it would grind a front corner\r\n");
+            Debug_P("    along the wall. This corridor is too narrow for an\r\n");
+            Debug_P("    in-place 180 at this chassis size.\r\n");
+            Debug_P("MODE10 ABORTED\r\n");
+            Debug_Flush();
+            Motors_Stop();
+            for (;;) { }
+        }
+        Debug_Flush();
+    }
+
+    // ---- turn around -----------------------------------------------------
+    Debug_P("[5] 180 degrees, rotating ");
+    if (dir == TURN_LEFT) Debug_P("LEFT");
+    else                  Debug_P("RIGHT");
+    Debug_P(" (");
+    Debug_Int((int32_t)chosen_cm);
+    Debug_P(" cm clear that side, need ");
+    Debug_Int((int32_t)PIVOT_SIDE_NEED_CM);
+    Debug_P(")\r\n");
+    Debug_Flush();
+
+    Turn_180(dir, &r);
+
+    Debug_P("    ");
+    Debug_KVF("ang10", r.achieved_tenths);
+    Debug_KVF("fin10", r.final_error_tenths);
+    Debug_KVF("conv", r.converged);
+    Debug_KVF("nudge", r.nudges_used);
+    Debug_KVF("wrong", r.wrong_way);
+    Debug_NL();
+    Debug_Flush();
+
+    // ---- what is ahead now? ---------------------------------------------
+    // Turn_Execute() flushed the sonar, so this needs its own priming. The
+    // way out should be open; anything short means the 180 fell well short
+    // of 180 and the robot is looking at a side wall.
+    deadend_reprime(12);
+    f_cm = Sonar_Median(SONAR_FRONT);
+    Debug_P("[6] way out ahead: ");
+    if (Sonar_Latest(SONAR_FRONT) == SONAR_NO_ECHO) {
+        Debug_P("clear beyond sensor range -- the turn worked\r\n");
+    } else {
+        Debug_Int((int32_t)f_cm);
+        Debug_P(" cm\r\n");
+        if (Sonar_IsValid(SONAR_FRONT) && f_cm < FRONT_BLOCKED_CM) {
+            Debug_P("    STILL BLOCKED. Either the 180 fell short and this is\r\n");
+            Debug_P("    a side wall, or the chassis is wedged in the corner.\r\n");
+        }
+    }
+    Debug_P("MODE10 DONE\r\n");
+    Debug_Flush();
+    Motors_Stop();
+    for (;;) { }
+}
+#endif // BUILD_MODE == 10
 
 int main(void) {
     uint32_t next_tick;
@@ -670,6 +863,43 @@ int main(void) {
                 }
             }
             // state 2: motors stay off; telemetry keeps printing below
+        }
+#elif BUILD_MODE == 10
+        {
+            static uint8_t  state      = 0;  // 0 idle, 1 approaching
+            static uint8_t  block_hits = 0;
+            static uint32_t drive_start = 0;
+
+            if (state == 0 && millis() - run_start > STARTUP_DELAY_MS) {
+                Drive_Begin();
+                drive_start = millis();      // time the DRIVE, not the boot
+                state = 1;
+                Debug_P("MODE10: driving the corridor, centring on both walls\r\n");
+            }
+
+            if (state == 1) {
+                // Same debounce as Modes 1 and 7 -- one bad ping must not
+                // trigger a turnaround in the middle of a clear corridor.
+                if (Sonar_FrontBlocked()) {
+                    if (block_hits < 255) block_hits++;
+                } else {
+                    block_hits = 0;
+                }
+
+                if (block_hits >= FRONT_STOP_CONFIRM) {
+                    Drive_Stop();
+                    deadend_sequence();      // blocking, never returns
+                } else if ((millis() - drive_start) > DEADEND_APPROACH_MAX_MS) {
+                    Drive_Stop();
+                    Debug_P("MODE10: no dead end found within the time limit\r\n");
+                    Debug_P("MODE10 ABORTED\r\n");
+                    Debug_Flush();
+                    Motors_Stop();
+                    for (;;) { }
+                } else {
+                    Drive_Tick(rate);
+                }
+            }
         }
 #else
         Maze_Tick(rate);

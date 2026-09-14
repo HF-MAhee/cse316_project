@@ -70,7 +70,14 @@ typedef struct {
 void Turn_Execute(uint16_t degrees, turn_dir_t dir, turn_result_t *res);
 
 void Turn_90(turn_dir_t dir, turn_result_t *res);
-void Turn_180(turn_result_t *res);
+
+// Reverse direction. `dir` is the side the chassis ROTATES TOWARDS, and it
+// matters physically, not just cosmetically: an in-place pivot is asymmetric.
+// The FRONT corners swing PIVOT_RADIUS_CM from the axle into the side being
+// turned towards, while the rear corners only reach about 10.6 cm out the
+// other side. So a 180 needs roughly 6 cm MORE free space on the side it
+// rotates into. In a dead end, pick the direction AWAY from the nearer wall.
+void Turn_180(turn_dir_t dir, turn_result_t *res);
 
 // Stream one line per gyro sample (decimated by TURNDBG_SAMPLE_EVERY) for the
 // duration of every subsequent turn: "S,<ms since turn start>,<raw rate>,
