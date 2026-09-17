@@ -264,6 +264,24 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
     uint8_t r_ok = Sonar_IsValid(SONAR_RIGHT);
     uint16_t l_cm = Sonar_Median(SONAR_LEFT);
     uint16_t r_cm = Sonar_Median(SONAR_RIGHT);
+
+    // A side OPENING is not a far wall -- and the difference is the whole
+    // reason a junction does not throw the robot into it.
+    //
+    // Validity alone is not enough here. Sonar_IsValid() only rejects a reading
+    // past SONAR_MAX_RANGE_CM, but an opening in a 40 cm maze ranges across the
+    // gap to the far wall of the next cell: about 45-55 cm, comfortably in
+    // range and therefore "valid". The differential controller then saw
+    // error = R - L = 14 - 50 = -36, clamped to full-scale, and steered HARD
+    // into the opening -- at every junction, which is exactly where the robot
+    // can least afford it.
+    //
+    // Sonar_IsOpen() is the test that already knows the difference (it is what
+    // maze.c classifies junctions with); the centring loop simply never asked.
+    // An open side is treated as ABSENT, so the controller falls back to
+    // holding station off the one real wall instead of chasing a phantom.
+    uint8_t l_wall = l_ok && !Sonar_IsOpen(SONAR_LEFT);
+    uint8_t r_wall = r_ok && !Sonar_IsOpen(SONAR_RIGHT);
     // Emergency fires either on the sub-minimum too-close flag OR on a valid
     // reading inside WALL_EMERGENCY_CM. Previously only the too-close flag
     // was checked, so WALL_EMERGENCY_CM was dead code and the robot got no
@@ -457,13 +475,13 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
     s_emerg_best_cm = 0;
 
     // --- Mode selection ---------------------------------------------------
-    if (l_ok && r_ok) {
+    if (l_wall && r_wall) {
         s_mode = CENTER_BOTH_WALLS;
         // Differential error. Independent of corridor width, which is exactly
         // why this works before the maze dimensions are finalised.
         // Positive => further from the right wall => steer right.
         error_cm = (int16_t)Sonar_Median(SONAR_RIGHT) - (int16_t)Sonar_Median(SONAR_LEFT);
-    } else if (l_ok) {
+    } else if (l_wall) {
         s_mode = CENTER_LEFT_ONLY;
         // Only here does an ABSOLUTE target matter -- and it has to be what a
         // side sonar really reads when centred, not the corridor half-width.
@@ -471,7 +489,7 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
         // sensor faces sit inboard of the chassis edge. Steering at
         // CORRIDOR_HALF_CM would drive the robot ~5 cm off-centre on purpose.
         error_cm = (int16_t)SIDE_CENTRED_CM - (int16_t)Sonar_Median(SONAR_LEFT);
-    } else if (r_ok) {
+    } else if (r_wall) {
         s_mode = CENTER_RIGHT_ONLY;
         error_cm = (int16_t)Sonar_Median(SONAR_RIGHT) - (int16_t)SIDE_CENTRED_CM;
     } else {
