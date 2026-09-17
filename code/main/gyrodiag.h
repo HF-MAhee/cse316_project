@@ -2,7 +2,7 @@
 #define GYRODIAG_H
 
 // ============================================================================
-//  Gyro / I2C connection diagnostic (BUILD_MODE 8).
+//  Gyro / I2C connection diagnostic (make MODE=gyrodiag).
 //
 //  Answers one question in plain language: is the MPU6050 actually connected
 //  and behaving, or is the link intermittent? Every step prints a verdict, so

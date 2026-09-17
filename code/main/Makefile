@@ -2,6 +2,30 @@ MCU     = atmega32
 F_CPU   = 16000000UL
 CC      = avr-gcc
 OBJCOPY = avr-objcopy
+
+# ---------------------------------------------------------------------------
+#  BUILD MODE SELECTION
+#
+#  Exactly one file from modes/ is compiled into the image. Pick it here or on
+#  the command line:
+#
+#      make                      build the default mode below
+#      make MODE=deadend         build modes/mode_deadend.c
+#      make MODE=turndbg flash   build that mode and flash it
+#      make list-modes           show every mode with what it does
+#
+#  This replaced a #define BUILD_MODE in main.c, which meant editing a source
+#  file to change what you were flashing -- easy to forget, and invisible in
+#  the build output. The mode now appears in `make` output and in the .elf name
+#  is checked below, so flashing the wrong image is much harder to do silently.
+# ---------------------------------------------------------------------------
+MODE ?= maze
+
+MODE_SRC = modes/mode_$(MODE).c
+ifeq ($(wildcard $(MODE_SRC)),)
+$(error Unknown MODE '$(MODE)'. Run 'make list-modes' to see the options)
+endif
+
 # -MMD -MP generate a .d file of header dependencies per object. Without them
 # editing config.h rebuilt NOTHING -- every tunable in the project lives in that
 # one header, so a "rebuilt" image could silently keep old constants. That is the
@@ -9,14 +33,21 @@ OBJCOPY = avr-objcopy
 # `make clean` is no longer required after every header edit.
 CFLAGS  = -mmcu=$(MCU) -DF_CPU=$(F_CPU) -Os -std=gnu99 -Wall -Wextra \
           -funsigned-char -funsigned-bitfields -ffunction-sections -fdata-sections \
-          -MMD -MP
+          -I. -MMD -MP
 LDFLAGS = -mmcu=$(MCU) -Wl,--gc-sections
 
-SRC = main.c timer.c i2c.c mpu6050.c heading.c motors.c sonar.c drive.c turn.c maze.c debug.c gyrodiag.c power.c
+# Everything here is mode-independent: drivers, control, and the runner.
+CORE = main.c timer.c i2c.c mpu6050.c heading.c motors.c sonar.c drive.c \
+       turn.c maze.c debug.c gyrodiag.c power.c resetlog.c telemetry.c
+
+SRC = $(CORE) $(MODE_SRC)
 OBJ = $(SRC:.c=.o)
 TARGET = agv
 
-all: $(TARGET).hex size
+all: banner $(TARGET).hex size
+
+banner:
+	@echo "=== building MODE=$(MODE)  ($(MODE_SRC)) ==="
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -30,14 +61,49 @@ $(TARGET).hex: $(TARGET).elf
 # Read the Data line. On a 2 KB part it is the number that bites first, and a
 # link that overflows it fails here rather than producing a broken image.
 size: $(TARGET).elf
-	avr-size --format=avr --mcu=$(MCU) $(TARGET).elf
+	@avr-size --format=avr --mcu=$(MCU) $(TARGET).elf
 
+# Re-state the mode at flash time too. The most expensive mistake with this
+# project is flashing a mode you did not mean to and reading the resulting
+# behaviour as a bug.
 flash: $(TARGET).hex
+	@echo "=== flashing MODE=$(MODE) ==="
 	avrdude -c usbasp -p m32 -U flash:w:$(TARGET).hex
 
+list-modes:
+	@echo "Available modes (make MODE=<name>):"
+	@echo "  sonar       sonar telemetry only, motors never move"
+	@echo "  corridor    wall centring in a straight corridor"
+	@echo "  turn        one 90 degree pivot, then halt"
+	@echo "  maze        the full maze solver            [default]"
+	@echo "  cone        sonar cone test, rotate by hand, motors off"
+	@echo "  square      four timed legs + four turns, no corridor"
+	@echo "  turndbg     repeated pivots with the full yaw-rate profile"
+	@echo "  avoid       corridor drive -> obstacle -> right turn -> leg"
+	@echo "  gyrodiag    gyro / I2C connection diagnostic, runs on a cold bus"
+	@echo "  openavoid   open-space obstacle avoidance, no corridor"
+	@echo "  deadend     dead-end 180, direction chosen from the nearer wall"
+
+# Build every mode in turn. Catches the failure modularisation invites: a mode
+# that stops compiling because a header it relied on is now only included
+# somewhere else.
+check-all:
+	@fail=0; \
+	for m in sonar corridor turn maze cone square turndbg avoid gyrodiag openavoid deadend; do \
+	  $(MAKE) --no-print-directory clean >/dev/null; \
+	  if $(MAKE) --no-print-directory MODE=$$m >/tmp/mk.$$m.log 2>&1; then \
+	    printf "  %-11s %s\n" "$$m" "$$(grep Program /tmp/mk.$$m.log | awk '{print $$2" flash, "}')$$(grep Data /tmp/mk.$$m.log | awk '{print $$2" ram"}')"; \
+	  else \
+	    printf "  %-11s BUILD FAILED\n" "$$m"; grep -m3 -E 'error|undefined' /tmp/mk.$$m.log; fail=1; \
+	  fi; \
+	done; \
+	$(MAKE) --no-print-directory clean >/dev/null; \
+	if [ $$fail -ne 0 ]; then echo "check-all: FAILED"; exit 1; fi; \
+	echo "check-all: all 11 modes build"
+
 clean:
-	rm -f *.o *.d *.elf *.hex
+	rm -f *.o *.d modes/*.o modes/*.d *.elf *.hex
 
 -include $(OBJ:.o=.d)
 
-.PHONY: all size flash clean
+.PHONY: all banner size flash clean list-modes check-all

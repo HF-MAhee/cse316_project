@@ -20,9 +20,22 @@ Everything else has a sane default but will benefit from tuning.
 
 ## 2. Build order
 
-Set `BUILD_MODE` in `main.c`. Do not skip ahead — each mode proves one layer.
+Each mode lives in its own file under `modes/` and is chosen at build time — no
+source edit needed:
 
-### Mode 0 — Sonar telemetry (no motion)
+```
+make list-modes            # every mode with a one-line description
+make MODE=sonar            # build it
+make MODE=sonar flash      # build and flash it
+make check-all             # compile all 11, catches a mode you broke elsewhere
+```
+
+`make` with no `MODE` builds the default (`maze`). The mode is echoed at build
+and flash time, so the image you burn is never a mystery.
+
+Do not skip ahead — each mode proves one layer.
+
+### `MODE=sonar` — Sonar telemetry (no motion)
 Robot stationary. Confirm over serial:
 - All three distances read plausibly, and track a hand moved toward each sensor
 - Readings don't jump when a *different* sensor fires (crosstalk check)
@@ -30,7 +43,7 @@ Robot stationary. Confirm over serial:
 
 If crosstalk appears, raise `CONTROL_TICK_MS`.
 
-### Mode 1 — Wall centering
+### `MODE=corridor` — Wall centering
 Straight corridor, 1.5 m. Start the robot deliberately off-centre and skewed.
 - It should converge to the middle within ~50 cm and hold
 - Oscillating → lower `WALL_KP_NUM`, or raise `WALL_KD_NUM`
@@ -44,7 +57,7 @@ damping, your gyro sign is inverted relative to my assumption — negate
 
 Then measure `TRAVEL_SPEED_CMS` here.
 
-### Mode 2 — Turn accuracy
+### `MODE=turn` — Turn accuracy
 Tape a floor mark. Run, measure the actual angle with a protractor.
 
 ```
@@ -57,7 +70,7 @@ so it should be close. Repeat until within ~2°.
 **Turn errors compound** — 5° per corner leaves you 20° crooked after four.
 Do not proceed until this is tight.
 
-### Mode 3 — Full maze
+### `MODE=maze` — Full maze
 Build up: straight corridor → one T-junction → dead end → full maze.
 
 ---
