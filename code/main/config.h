@@ -929,4 +929,37 @@
 // blocking print used to be enough to do this; it must stay at zero.
 #define TICK_OVERRUN_WARN_MS   (CONTROL_TICK_MS + 5)
 
+// ---------------------------------------------------------------------------
+//  17. WALL-FOLLOWER WITH MEMORY  (MODE=wallmem)
+// ---------------------------------------------------------------------------
+// Run 1 explores with a strict left-hand rule and logs one byte per decision.
+// Run 2 replays the collapsed string. See wallmem.h for the record layout and
+// why the collapse is (A + B + 2) & 3.
+
+// Ceiling on the explore log. The designed 14-cell demo maze needs 19 records
+// for the full left-hand walk and 5 after collapsing, so this is roughly 2x
+// headroom. An explore run that needs more is REPORTED AS A FAILURE rather
+// than truncated: a truncated string replays straight into a wall.
+#define WALLMEM_MAX_RECORDS    48
+
+// Byte offset of the saved route inside the ATmega32's 1024-byte EEPROM.
+// Nothing else in this project uses EEPROM, so the base is arbitrary; it is
+// named rather than literal so a second user can be added without a hunt.
+#define WALLMEM_EE_BASE        0x0010
+
+// 1 = ignore any saved route and explore again on every power-up.
+// Set this to 1 to re-run the explore leg without erasing EEPROM by hand.
+#define WALLMEM_FORCE_EXPLORE  0
+
+// What run 2 does when a junction does not match the stored signature.
+//   0 = drop back to the plain left-hand rule for the rest of the run
+//   1 = stop and halt
+// 0 is the default deliberately: a degraded run that still finishes is more
+// useful on the day than a robot standing still in the middle of the maze.
+#define WALLMEM_HALT_ON_MISMATCH 0
+
+// Consecutive confirmations that the way out really is the way out. Reuses the
+// same evidence as the maze solver's exit test, at the same confidence.
+#define WALLMEM_EXIT_CONFIRM   OPENING_CONFIRM
+
 #endif // CONFIG_H

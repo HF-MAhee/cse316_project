@@ -38,7 +38,8 @@ LDFLAGS = -mmcu=$(MCU) -Wl,--gc-sections
 
 # Everything here is mode-independent: drivers, control, and the runner.
 CORE = main.c timer.c i2c.c mpu6050.c heading.c motors.c sonar.c drive.c \
-       turn.c maze.c debug.c gyrodiag.c power.c resetlog.c telemetry.c
+       turn.c maze.c debug.c gyrodiag.c power.c resetlog.c telemetry.c \
+       wallmem.c
 
 SRC = $(CORE) $(MODE_SRC)
 OBJ = $(SRC:.c=.o)
@@ -83,13 +84,15 @@ list-modes:
 	@echo "  gyrodiag    gyro / I2C connection diagnostic, runs on a cold bus"
 	@echo "  openavoid   open-space obstacle avoidance, no corridor"
 	@echo "  deadend     dead-end 180, direction chosen from the nearer wall"
+	@echo "  wallmem     wall follower WITH MEMORY: explore, then replay the"
+	@echo "              collapsed route (two separate power-ups, EEPROM)"
 
 # Build every mode in turn. Catches the failure modularisation invites: a mode
 # that stops compiling because a header it relied on is now only included
 # somewhere else.
 check-all:
 	@fail=0; \
-	for m in sonar corridor turn maze cone square turndbg avoid gyrodiag openavoid deadend; do \
+	for m in sonar corridor turn maze cone square turndbg avoid gyrodiag openavoid deadend wallmem; do \
 	  $(MAKE) --no-print-directory clean >/dev/null; \
 	  if $(MAKE) --no-print-directory MODE=$$m >/tmp/mk.$$m.log 2>&1; then \
 	    printf "  %-11s %s\n" "$$m" "$$(grep Program /tmp/mk.$$m.log | awk '{print $$2" flash, "}')$$(grep Data /tmp/mk.$$m.log | awk '{print $$2" ram"}')"; \
@@ -99,11 +102,19 @@ check-all:
 	done; \
 	$(MAKE) --no-print-directory clean >/dev/null; \
 	if [ $$fail -ne 0 ]; then echo "check-all: FAILED"; exit 1; fi; \
-	echo "check-all: all 11 modes build"
+	echo "check-all: all 12 modes build"
+
+# Host-side test for the wall-follower memory. Compiles the SAME wallmem.c the
+# firmware links against, against a model of the demo maze, and checks that the
+# explore log collapses to the optimal route and replays back out of the maze.
+# It needs no hardware, so there is no excuse for not running it before a flash.
+test:
+	@cc -I. -Wall -Wextra -O1 -o /tmp/test_wallmem test/test_wallmem.c wallmem.c
+	@/tmp/test_wallmem
 
 clean:
 	rm -f *.o *.d modes/*.o modes/*.d *.elf *.hex
 
 -include $(OBJ:.o=.d)
 
-.PHONY: all banner size flash clean list-modes check-all
+.PHONY: all banner size flash clean list-modes check-all test

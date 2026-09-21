@@ -1,0 +1,178 @@
+# Wall follower with memory (`make MODE=wallmem`)
+
+Two runs through the same maze. The first explores and writes down what it did;
+the second replays the shortest route. On a maze with no loops the second run is
+provably optimal, not merely better.
+
+## Why not flood fill
+
+Flood fill needs the robot to know **which cell it is in**. This chassis has no
+encoders, so that cell index comes from `time x speed` plus integrated gyro
+heading, and the error it accumulates is never corrected.
+
+This algorithm never needs to know where it is. It needs only:
+
+1. a correct junction classification (three sonars), and
+2. a clean 90/180 degree pivot (gyro).
+
+Both are things the firmware already does well.
+
+## Run 1 — explore
+
+Strict left-hand rule at every cell: **LEFT > FORWARD > RIGHT > U-TURN**
+(`WallMem_LeftHand()`). One byte is logged per **decision point**, where a
+decision point is any cell that is not a plain corridor
+(`WallMem_IsDecision()`). Corridor cells are driven through and log nothing.
+
+That predicate is used by *both* runs, and that is what keeps the string
+aligned: run 2 cannot consume a record at a cell where run 1 did not write one,
+because both ask the same question of the same three bits.
+
+## The record byte
+
+```
+ bit   7    6    5    4    3    2    1    0
+     [ 0 ][ F ][ L ][ R ][ 0 ][ 0 ][  TURN  ]
+           \___________/             \_____/
+            signature                 what
+           (sonar truth)             we did
+```
+
+Bits 7, 3 and 2 are always zero. That is a structural check, not padding:
+erased EEPROM reads `0xFF`, which fails it, so a blank or half-written cell can
+never be mistaken for a record (`WallMem_RecordIsSane()`).
+
+The signature stores raw **openness** of forward/left/right rather than the
+derived junction enum. Same three bits, but the raw form is what run 2 compares
+against and it cannot disagree with the classifier, because it *is* the
+classifier's input.
+
+Turns are **quarter turns clockwise**:
+
+| code | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| | `F` 0&deg; | `R` 90&deg; | `U` 180&deg; | `L` 270&deg; |
+
+This encoding is doing real work. It makes the collapse one line, and it makes
+the turn code double as the heading delta — `head = (head + turn) & 3` — which
+is exactly how the host test walks the maze.
+
+## Between runs — collapse
+
+Every wasted move in run 1 is an excursion into a dead-end branch: turn `A`, go
+in, `U`-turn, come back, turn `B`. The net rotation is `A + 180 + B`, so
+
+```c
+net = (a + b + 2) & 3;
+```
+
+replaces all three records with one, keeping `A`'s signature (`A` is the first
+arrival at that junction, and run 2 arrives the same way). Repeat until no `U`
+remains — `WallMem_Reduce()`.
+
+Three of the nine cases fold to a `U` again. That is correct, not a bug: it
+means the junction's entire subtree was a dead end, so the robot must reverse
+out of the junction too. That `U` then folds with *its* neighbours on the next
+pass.
+
+**A `U` that survives to the end means the maze has a loop, or a junction was
+misread.** The string is then not a route, and the firmware erases rather than
+saves it.
+
+## Run 2 — replay
+
+At every decision point, pop the next byte, **compare the stored signature
+against what the sonars see right now**, then act. The signature check is the
+safety net: if a pivot overshot and the robot is in the wrong corridor, the
+junction will not match, and it says so *before* acting on a stale instruction.
+
+Default response is to fall back to the plain left-hand rule for the rest of the
+run (`WALLMEM_HALT_ON_MISMATCH 0`) — a degraded run that finishes beats a robot
+standing still in the middle of the maze.
+
+## Storage
+
+The two runs are separate power-ups, so the route lives in EEPROM at
+`WALLMEM_EE_BASE`:
+
+```
++0  magic 'W'     <- written LAST
++1  magic 'M'
++2  format version
++3  record count
++4  flags   bit0 = collapsed, solved route
++5  CRC-8 over +2..+4 and every record
++6  reserved
++7  reserved
++8  records
+```
+
+The magic byte is cleared first and written last, so a brown-out part way
+through a write — a real event on this chassis, not a theoretical one — leaves a
+block with no magic. It fails validation, and the next power-up explores again
+instead of driving half a route. Load validates magic, version, count ceiling,
+every record's reserved bits, and the CRC.
+
+## Operating procedure
+
+```
+make MODE=wallmem flash
+```
+
+1. Put the robot in the **start cell facing into the maze**. Power on.
+   The log prints `RUN 1 (explore)`.
+2. It reaches the exit, prints the log, collapses it, and saves.
+3. **Power-cycle.** Put it back in the same start cell facing the same way.
+   The log prints `RUN 2 (speed)` and dumps the route it is about to drive.
+
+To explore again, set `WALLMEM_FORCE_EXPLORE 1` in `config.h` and rebuild.
+
+## The demo maze
+
+14 cells, 200 x 120 cm, 40 cm corridors, **21 wall faces = 840 cm**.
+
+```
++    +----+----+----+  ^ +      ^ = exit gap  (north of E2)
+     | B2   C2   D2   E2 |      v = entry gap (south of E0)
++----+----+    +----+----+
+| A1   B1 | C1   D1   E1 |      1 cell = 40 cm
++    +    +    +    +    +
+| A0 | B0   C0 | D0 | E0 |
++----+----+----+----+  v +
+```
+
+Seven interior walls: `A0|B0`, `B1|B2`, `B1|C1`, `C0|D0`, `D0|E0`, `D1|D2`,
+`E1|E2`. It is a spanning tree — exactly one route between any two cells, which
+is the condition the optimality guarantee rests on.
+
+|                  | run 1  | run 2 |
+|---|---|---|
+| path             | 840 cm | 280 cm |
+| junction-to-junction legs | 21 | 7 |
+| 90&deg; turns    | 14     | 4 |
+| 180&deg; turns   | 3      | 0 |
+| time (estimated) | ~63 s  | ~15 s |
+| records          | 19     | 5 |
+
+All seven junction types appear in run 1, including three dead ends of different
+shapes — one cell deep (`D0`), one cell deep off a T (`B2`), and a four-turn
+spiral (`C1 -> C0 -> B0 -> B1 -> A1 -> A0`).
+
+One known weak spot: leg 3 (`D1` heading south into the `D0` branch) has
+openings on both sides, so for 40 cm there is nothing for the wall-centring PD
+to hold and it runs on gyro heading alone. That is unavoidable at this wall
+budget — 7 walls across 20 internal edges leaves the maze 65% open.
+
+## Test
+
+```
+make test
+```
+
+Compiles the **same `wallmem.c` the firmware links against** against a model of
+the maze above, with no hardware. It checks that run 1 produces the designed
+19-record log, that it collapses to the 5-record route, that the route survives
+an EEPROM round trip, and that replaying it drives `E0 E1 D1 C1 C2 D2 E2` and
+out — consuming the string exactly. It also checks all nine fold cases, a
+four-turn nested dead end, the record bit layout, log overflow, and four ways of
+corrupting EEPROM (blank, flipped bit, missing magic, impossible count).
