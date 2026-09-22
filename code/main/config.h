@@ -487,12 +487,47 @@
 // ---------------------------------------------------------------------------
 //  11. END-OF-MAZE DETECTION  (your point #3)
 // ---------------------------------------------------------------------------
-// All three sensors open => exit. But at a left-or-right T-junction both side
-// openings can appear a moment before the front wall closes in, which looks
-// identical for a short window. So: on first detection, drive on this far and
-// re-check. A real exit stays open; a T-junction's front wall closes in.
-#define EXIT_CONFIRM_CM        25
+// All three sensors open => exit. But a junction can look exactly the same for
+// a short window, so on first detection the robot drives on and re-checks: a
+// real exit stays open, a junction's front wall closes in.
+//
+// HOW FAR IS "ON"? This used to be a flat 25, which happened to be right. It is
+// now derived, because the number is not free -- it is pinned by geometry at
+// both ends, and a corridor width change would silently break it.
+//
+// The moment the front sonar crosses into a junction cell, that cell's far wall
+// is CORRIDOR_WIDTH_CM ahead and therefore reads OPEN; both sides have just
+// opened too. It keeps reading open until the wall is within FRONT_BLOCKED_CM.
+// So the longest an in-maze junction can impersonate the exit is exactly:
+#define EXIT_FALSE_WINDOW_CM   (CORRIDOR_WIDTH_CM - FRONT_BLOCKED_CM)   // 15 cm
+
+// Drive clear of that window before believing it. The margin covers the sonar
+// refresh (3 x CONTROL_TICK_MS per sensor) and speed error.
+#define EXIT_CONFIRM_MARGIN_CM 10
+#define EXIT_CONFIRM_CM        (EXIT_FALSE_WINDOW_CM + EXIT_CONFIRM_MARGIN_CM)
 #define EXIT_CONFIRM_MS        (((uint32_t)EXIT_CONFIRM_CM * 1000UL) / TRAVEL_SPEED_CMS)
+
+// The margin has to outlast the EVIDENCE, not just the geometry. One sonar
+// refresh is CONTROL_TICK_MS x 3 sensors (they are pinged round-robin), and a
+// side opening needs OPENING_CONFIRM of them before it counts -- so this much
+// travel passes before the classifier can even change its mind:
+#define EXIT_CONFIRM_SETTLE_CM \
+    (((CONTROL_TICK_MS) * 3 * (OPENING_CONFIRM) * (TRAVEL_SPEED_CMS)) / 1000)
+
+// Below twice that, the window is shorter than the evidence it is waiting for
+// and a T-junction can read as the maze exit -- the run then ends in the middle
+// of the maze with a route that goes nowhere. Note this checks the MARGIN, not
+// EXIT_CONFIRM_CM: that is defined as window + margin, so comparing it against
+// the window can never fail and would be a guard that only looks like one.
+#if (EXIT_CONFIRM_MARGIN_CM) < (2 * (EXIT_CONFIRM_SETTLE_CM))
+#  error "EXIT_CONFIRM_MARGIN_CM is below two sonar-confirm periods of travel: a T-junction could read as the maze exit. Raise it, slow TRAVEL_SPEED_CMS, or lower OPENING_CONFIRM."
+#endif
+
+// ASSUMPTION, not checkable at compile time: the maze has no 4-way crossroads.
+// At a true crossroads all three sensors stay open for a whole cell, which is
+// longer than this window, and the robot would call it the exit. The demo maze
+// in WALLMEM.md has none -- deliberately, since a 4-way also leaves nothing for
+// the wall-centring to hold on to while crossing it.
 
 // ---------------------------------------------------------------------------
 //  12. TURNS

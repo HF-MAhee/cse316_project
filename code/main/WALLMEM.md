@@ -163,6 +163,39 @@ openings on both sides, so for 40 cm there is nothing for the wall-centring PD
 to hold and it runs on gyro heading alone. That is unavoidable at this wall
 budget — 7 walls across 20 internal edges leaves the maze 65% open.
 
+## Telling a T-junction from the exit
+
+Both look identical for a moment. When the front sonar crosses into a junction
+cell, that cell's far wall is `CORRIDOR_WIDTH_CM` ahead and so reads **open**,
+and both sides have just opened too — all three sensors open, exactly like the
+way out. It happens at `C1` and `C2`, the two T-junctions, on every run.
+
+The distinction is made by driving. On first sighting the robot enters
+`WM_CONFIRM_EXIT` and keeps going: a junction's front wall closes in, the exit's
+never does. The window is derived rather than guessed —
+
+```
+EXIT_FALSE_WINDOW_CM = CORRIDOR_WIDTH_CM - FRONT_BLOCKED_CM   = 40 - 25 = 15 cm
+EXIT_CONFIRM_CM      = EXIT_FALSE_WINDOW_CM + MARGIN          = 15 + 10 = 25 cm
+```
+
+15 cm is the *longest* an in-maze junction can impersonate the exit, because the
+front wall is only ever one cell away. 25 cm clears it with 10 cm to spare, and
+a compile-time guard fails the build if that margin drops below two sonar-confirm
+periods of travel.
+
+The confirm costs no extra travel. It bails on the **raw** front reading, which
+arrives at the same distance at which the junction would have been classified
+anyway — one control tick, then straight into the normal approach. The log
+prints how far into the window the wall appeared, which is the margin you cannot
+compute from a datasheet: if it creeps toward 25 cm on real cardboard, raise
+`EXIT_CONFIRM_MARGIN_CM`.
+
+**This assumes no 4-way crossroads.** At a true crossroads all three sensors
+stay open for a whole cell — longer than the window — and the robot would call
+it the exit. The maze above has none, deliberately: a 4-way also leaves the
+wall-centring nothing to hold while crossing it.
+
 ## Test
 
 ```

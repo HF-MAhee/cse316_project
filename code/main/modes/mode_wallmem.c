@@ -317,10 +317,28 @@ void Mode_Tick(const tick_ctx_t *t) {
         break;
 
     case WM_CONFIRM_EXIT:
+        // The distinction between "the exit" and "a junction whose front wall
+        // has not closed in yet" is made HERE, and it is made by driving: keep
+        // going, and see whether a wall turns up. A junction produces one
+        // within EXIT_FALSE_WINDOW_CM; the exit never does.
+        //
+        // Bailing on the RAW front reading rather than the debounced one is
+        // deliberate. It returns to WM_DRIVING at the same front distance at
+        // which the junction would have been classified anyway, so the detour
+        // costs one control tick and no extra travel -- the approach timing
+        // downstream is unaffected.
         Drive_Tick(rate);
         update_debounce();
         if (Sonar_FrontBlocked()) {
-            Debug_P("not the exit -- front wall\r\n");
+            // How far into the window the wall appeared. This is the margin
+            // nobody can compute from a datasheet: if it ever creeps close to
+            // EXIT_CONFIRM_CM on real cardboard, raise EXIT_CONFIRM_MARGIN_CM
+            // before it costs a run.
+            Debug_P("not the exit -- front wall at ");
+            Debug_Int((int32_t)(((millis() - s_entered) * TRAVEL_SPEED_CMS) / 1000UL));
+            Debug_P(" cm of ");
+            Debug_Int((int32_t)EXIT_CONFIRM_CM);
+            Debug_P(" cm\r\n");
             enter(WM_DRIVING);
             break;
         }
