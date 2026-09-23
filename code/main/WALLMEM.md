@@ -113,19 +113,65 @@ block with no magic. It fails validation, and the next power-up explores again
 instead of driving half a route. Load validates magic, version, count ceiling,
 every record's reserved bits, and the CRC.
 
-## Operating procedure
+## The operator panel
+
+Two pins on **PORTB**, the only port the firmware had nothing on:
+
+```
+PB0 --[330R]--|>|-- GND      LED, active high
+PB1 -----------o o-- GND     button to ground, internal pull-up, press = LOW
+```
+
+No external resistor on the button — the internal pull-up holds the pin high
+and the switch pulls it down. PB0 and PB1 are adjacent, so it is one 3-pin
+header (LED, BUTTON, GND), and both sit clear of PB5/PB6/PB7 = MOSI/MISO/SCK,
+so **the ISP programmer can stay plugged in** while the panel is wired. Both
+alternate functions on these pins are inactive in this build: PB0 is T0/XCK
+(Timer0 runs off the internal clock, the USART is asynchronous) and PB1 is T1
+(Timer1 runs off the internal clock).
+
+### What the LED means
+
+| LED | state |
+|---|---|
+| off | ready for **run 1**, or driving |
+| **solid** | a collapsed route is loaded — **ready for run 2** |
+| slow blink (1 Hz) | run 2 finished |
+| fast blink (4 Hz) | the explore log did not collapse to a route, or the robot halted |
+
+"Ready" and "finished" are deliberately different lights, and so are "not ready"
+and "not finished yet" — a dark LED after a failed run would look exactly like a
+run still in progress.
+
+### Operating procedure
 
 ```
 make MODE=wallmem flash
 ```
 
 1. Put the robot in the **start cell facing into the maze**. Power on.
-   The log prints `RUN 1 (explore)`.
-2. It reaches the exit, prints the log, collapses it, and saves.
-3. **Power-cycle.** Put it back in the same start cell facing the same way.
-   The log prints `RUN 2 (speed)` and dumps the route it is about to drive.
+   The LED is **off**: it is armed for run 1.
+2. **Press the button.** After a 3 s settle (during which it re-zeros the gyro)
+   it explores.
+3. It reaches the exit, collapses the log, saves to EEPROM, and the
+   **LED comes on**. That is the signal that run 2 is loaded and ready.
+4. Carry the robot back to the start cell, facing in. **Press the button.**
+   It re-zeros the gyro again — it has just been handled — and drives the
+   optimal route.
+5. LED slow-blinks. A short press runs it again.
 
-To explore again, set `WALLMEM_FORCE_EXPLORE 1` in `config.h` and rebuild.
+Nothing moves until the button is pressed, run 1 included. A robot that drives
+off on a timer while it is still being positioned is the failure that removes.
+
+**Hold the button for 2 s** in any waiting state to throw the saved route away
+and explore again. Without it, re-exploring means editing
+`WALLMEM_FORCE_EXPLORE` and reflashing, which during a lab session is exactly
+when you least want to.
+
+The route is still written to EEPROM, so a power cycle between the runs also
+works: the robot comes back up with the LED already on, waiting for the button.
+That matters on this chassis, where the power cycle is sometimes not the
+operator's choice.
 
 ## The demo maze
 
@@ -202,10 +248,18 @@ wall-centring nothing to hold while crossing it.
 make test
 ```
 
-Compiles the **same `wallmem.c` the firmware links against** against a model of
+Runs two suites, both compiling the **same source the firmware links against**.
+
+`test_wallmem.c` takes `wallmem.c` against a model of
 the maze above, with no hardware. It checks that run 1 produces the designed
 19-record log, that it collapses to the 5-record route, that the route survives
 an EEPROM round trip, and that replaying it drives `E0 E1 D1 C1 C2 D2 E2` and
 out — consuming the string exactly. It also checks all nine fold cases, a
 four-turn nested dead end, the record bit layout, log overflow, and four ways of
 corrupting EEPROM (blank, flipped bit, missing magic, impossible count).
+
+`test_panel.c` takes `panel.c` against shimmed pins and clock: that a low line
+at power-up does not launch the robot, that a short press fires exactly once on
+release, that a long press fires the hold event *instead of* the short one, that
+switch chatter shorter than the debounce fires nothing, that holding the button
+does not stream events, and that the LED modes drive and blink the pin.

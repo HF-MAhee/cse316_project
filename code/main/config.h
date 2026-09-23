@@ -44,6 +44,38 @@
 #define LEFT_PWM_BIT    PD4
 #define RIGHT_PWM_BIT   PD5
 
+// PORTB -- operator panel (LED + start button)
+//
+// PORTB was the only port with nothing on it at all. PB0 and PB1 are adjacent,
+// so the panel is one 3-pin header (LED, BUTTON, GND), and both are clear of
+// PB5/PB6/PB7 = MOSI/MISO/SCK, so the ISP programmer can stay connected while
+// the panel is wired -- which it cannot if the button sits on an ISP pin.
+//
+// Both alternate functions on these pins are inactive in this build: PB0 is
+// T0/XCK (Timer0 runs off the internal clock, the USART is asynchronous) and
+// PB1 is T1 (Timer1 runs off the internal clock). Nothing to reassign.
+//
+//   PB0 --[330R]--|>|-- GND     LED, active high
+//   PB1 -----------o o-- GND    button to ground, internal pull-up, press = LOW
+#define PANEL_PORT      PORTB
+#define PANEL_DDR       DDRB
+#define PANEL_PIN       PINB
+#define LED_BIT         PB0
+#define BUTTON_BIT      PB1
+
+// Consecutive agreeing samples before the debounced button level moves. At
+// CONTROL_TICK_MS = 20 this is 60 ms, comfortably past the few ms a panel
+// button bounces for, and far too short to feel laggy.
+#define BUTTON_DEBOUNCE_TICKS  3
+
+// Hold the button this long to throw the saved route away and explore again.
+// Without it, re-exploring means editing WALLMEM_FORCE_EXPLORE and reflashing,
+// which during a lab session is exactly when you least want to.
+#define BUTTON_LONG_PRESS_MS   2000UL
+
+#define LED_BLINK_SLOW_MS      500   // ~1 Hz -- finished
+#define LED_BLINK_FAST_MS      120   // ~4 Hz -- fault
+
 // ---------------------------------------------------------------------------
 //  2. ROBOT PHYSICAL DIMENSIONS          [MEASURE ALL OF THESE]
 // ---------------------------------------------------------------------------

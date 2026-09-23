@@ -9,6 +9,7 @@
 #include "drive.h"
 #include "turn.h"
 #include "wallmem.h"
+#include "panel.h"
 #include "debug.h"
 
 // ============================================================================
@@ -24,16 +25,28 @@
 //                   junction is checked against the signature that was stored
 //                   for it before its turn is acted on.
 //
-//  The two runs are deliberately separate power-ups. That is not a limitation
-//  worked around, it is the point: the route lives in EEPROM, so the brown-outs
-//  this chassis suffers cannot lose it, and the operator gets a clean reset
-//  between the exploring run and the fast one.
+//  BOTH RUNS HAPPEN IN ONE POWER-UP, gated by the panel button:
+//
+//    LED off    -> press starts RUN 1 (explore)
+//    LED solid  -> a collapsed route is loaded; press starts RUN 2 (speed)
+//    LED fast   -> the explore log did not collapse to a route; do not expect
+//                  a fast run, the next press explores again
+//    LED slow   -> run 2 finished
+//
+//  So the sequence on the day is: press, watch it explore, wait for the LED to
+//  come on, carry the robot back to the start cell, press again.
+//
+//  The route is still written to EEPROM at the end of run 1, so a power cycle
+//  between the runs also works -- the robot comes back up with the LED already
+//  on, waiting for the button. That matters on this chassis, where the power
+//  cycle is sometimes not the operator's choice.
 //
 //  To explore again: set WALLMEM_FORCE_EXPLORE to 1 in config.h and rebuild.
 // ============================================================================
 
 typedef enum {
-    WM_STARTUP = 0,
+    WM_ARMED = 0,      // stopped, LED showing which run is next, waiting for the button
+    WM_STARTUP,
     WM_DRIVING,        // centring forward, watching for a junction
     WM_APPROACH,       // junction seen; drive on so the AXLE reaches it
     WM_CONFIRM_EXIT,   // all three open -- exit, or a 4-way seen early?
@@ -42,6 +55,7 @@ typedef enum {
     WM_DECIDE,         // execute the pivot
     WM_RECOVER,        // gyro-only while the sonar filters refill
     WM_DONE,
+    WM_DONE_IDLE,      // run 2 over; slow blink until the button is pressed again
     WM_FAULT
 } wm_state_t;
 
@@ -65,6 +79,9 @@ static uint8_t s_recover_begun = 0;
 // like a cell count would be a number nobody could trust.
 static uint16_t s_segments = 0, s_turns90 = 0, s_turns180 = 0;
 static uint8_t  s_finished = 0;
+// Sticky across runs: a log that would not collapse leaves the LED blinking
+// rather than dark, so "not ready" never looks like "not finished yet".
+static uint8_t  s_collapse_failed = 0;
 
 static void enter(wm_state_t st) {
     s_state = st;
@@ -173,6 +190,41 @@ static uint8_t decide_turn(uint8_t f, uint8_t l, uint8_t r) {
 #endif
 }
 
+// Put the robot in its waiting state and say -- on the LED and on the wire --
+// which run the button is about to start. Everything that ends a run comes
+// through here, so there is exactly one place that decides what "ready" means.
+static void arm(void) {
+    Motors_Stop();
+    s_finished = 0;
+    s_degraded = 0;
+    s_segments = 0;
+    s_turns90  = 0;
+    s_turns180 = 0;
+    WallMem_RewindPlayback();
+
+    if (WallMem_HaveSolution() && WallMem_Count() > 0) {
+        s_exploring = 0;
+        Panel_SetLed(LED_ON);
+        Debug_P("\r\n>>> LED ON -- READY FOR RUN 2.\r\n");
+        Debug_P("    Put the robot back in the START cell facing in, then press"
+                " the button.\r\n");
+    } else {
+        s_exploring = 1;
+        // Clear the log before an explore run, not after. A collapse that
+        // failed leaves a short, half-folded string in RAM with s_solved clear,
+        // and WallMem_Record() appends at s_count -- so without this the next
+        // explore run would log on top of the wreckage of the last one.
+        WallMem_Reset();
+        // A failed collapse leaves the LED blinking rather than dark, because
+        // "not ready" and "not finished yet" otherwise look the same.
+        Panel_SetLed(s_collapse_failed ? LED_BLINK_FAST : LED_OFF);
+        Debug_P("\r\n>>> READY FOR RUN 1 (explore). Press the button to"
+                " start.\r\n");
+    }
+    Debug_Flush();
+    enter(WM_ARMED);
+}
+
 static void report_run(void) {
     Debug_P("\r\n---- run summary ----\r\n");
     Debug_KVF("mode", (int32_t)(s_exploring ? 1 : 2));
@@ -218,15 +270,12 @@ void Mode_Header(void) {
 
 void Mode_Begin(void) {
     clear_debounce();
-    s_segments = 0;
-    s_turns90  = 0;
-    s_turns180 = 0;
-    s_finished = 0;
-    s_degraded = 0;
-    WallMem_RewindPlayback();
     s_leg_started = millis();
     s_run_started = millis();
-    enter(WM_STARTUP);
+    // Nothing moves until the button is pressed -- including run 1. A robot
+    // that drives off on a timer while it is still being positioned is the
+    // failure this removes, and it makes both runs start the same way.
+    arm();
 }
 
 void Mode_Tick(const tick_ctx_t *t) {
@@ -235,8 +284,38 @@ void Mode_Tick(const tick_ctx_t *t) {
 
     switch (s_state) {
 
+    case WM_ARMED:
+        Motors_Stop();
+        if (Panel_ButtonHeld()) {
+            // Long press: throw the route away and explore again. Checked
+            // before the short press, and only one of the two can be latched.
+            Debug_P("\r\nbutton held -- discarding the saved route\r\n");
+            WallMem_Erase();
+            WallMem_Reset();
+            s_collapse_failed = 0;
+            arm();
+            break;
+        }
+        if (Panel_ButtonPressed()) {
+            Debug_P("\r\nbutton pressed -- starting RUN ");
+            Debug_Int((int32_t)(s_exploring ? 1 : 2));
+            Debug_P(", hold still\r\n");
+            Debug_Flush();
+            Panel_SetLed(LED_OFF);
+            enter(WM_STARTUP);
+        }
+        break;
+
     case WM_STARTUP:
         if (in_state_for(STARTUP_DELAY_MS)) {
+            // The operator has just handled the chassis -- carried it across
+            // the room and set it down. Re-zero on the spot: the bias is still
+            // good but the accumulated heading is meaningless, and the sonar
+            // filters are full of readings taken while it was in mid-air.
+            if (!Gyro_CalibrateQuick()) Debug_P("recal SKIPPED -- not still\r\n");
+            Heading_Reset();
+            Sonar_Flush();
+            clear_debounce();
             Debug_P("GO\r\n");
             Drive_Begin();
             s_run_started = millis();
@@ -422,7 +501,8 @@ void Mode_Tick(const tick_ctx_t *t) {
             Debug_Int((int32_t)stray);
             Debug_P("\r\n");
 
-            if (stray || WallMem_Overflowed()) {
+            s_collapse_failed = (uint8_t)((stray || WallMem_Overflowed()) ? 1u : 0u);
+            if (s_collapse_failed) {
                 // A U-turn with nothing to fold into means the walk did not
                 // come back out the way it went in: a loop in the maze, or a
                 // junction read wrongly. Either way the string is not a route.
@@ -439,11 +519,11 @@ void Mode_Tick(const tick_ctx_t *t) {
                 WallMem_Dump();
                 if (WallMem_Save()) {
                     Debug_P("saved to EEPROM.\r\n");
-                    Debug_P("POWER-CYCLE, put the robot back in the START cell"
-                            " facing in, and run 2 will replay this.\r\n");
                 } else {
-                    Debug_P("*** EEPROM WRITE FAILED -- run 2 would explore"
-                            " again.\r\n");
+                    Debug_P("*** EEPROM WRITE FAILED -- the route is still in"
+                            " RAM, so the button will\r\n");
+                    Debug_P("    still run it, but a power cycle now loses"
+                            " it.\r\n");
                 }
             }
         } else {
@@ -452,13 +532,34 @@ void Mode_Tick(const tick_ctx_t *t) {
             Debug_P(" of ");
             Debug_Int((int32_t)WallMem_Count());
             Debug_P(" stored decisions.\r\n");
+            Debug_Flush();
+            // Run 2 is the end of the demo. Slow blink says finished, which is
+            // not the same light as ready -- press again to re-run it.
+            Panel_SetLed(LED_BLINK_SLOW);
+            enter(WM_DONE_IDLE);
+            break;
         }
         Debug_Flush();
+        arm();          // LED on, waiting for the button and the second run
+        break;
+
+    case WM_DONE_IDLE:
+        Motors_Stop();
+        if (Panel_ButtonHeld()) {
+            Debug_P("\r\nbutton held -- discarding the saved route\r\n");
+            WallMem_Erase();
+            WallMem_Reset();
+            s_collapse_failed = 0;
+            arm();
+            break;
+        }
+        if (Panel_ButtonPressed()) arm();      // short press: run it again
         break;
 
     case WM_FAULT:
     default:
         Motors_Stop();
+        Panel_SetLed(LED_BLINK_FAST);
         break;
     }
 }

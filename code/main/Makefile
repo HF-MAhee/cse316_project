@@ -39,7 +39,7 @@ LDFLAGS = -mmcu=$(MCU) -Wl,--gc-sections
 # Everything here is mode-independent: drivers, control, and the runner.
 CORE = main.c timer.c i2c.c mpu6050.c heading.c motors.c sonar.c drive.c \
        turn.c maze.c debug.c gyrodiag.c power.c resetlog.c telemetry.c \
-       wallmem.c
+       wallmem.c panel.c
 
 SRC = $(CORE) $(MODE_SRC)
 OBJ = $(SRC:.c=.o)
@@ -104,13 +104,16 @@ check-all:
 	if [ $$fail -ne 0 ]; then echo "check-all: FAILED"; exit 1; fi; \
 	echo "check-all: all 12 modes build"
 
-# Host-side test for the wall-follower memory. Compiles the SAME wallmem.c the
-# firmware links against, against a model of the demo maze, and checks that the
-# explore log collapses to the optimal route and replays back out of the maze.
-# It needs no hardware, so there is no excuse for not running it before a flash.
+# Host-side tests. Both compile the SAME source the firmware links against:
+# wallmem.c against a model of the demo maze (explore -> collapse -> replay),
+# and panel.c against shimmed pins and clock (debounce, short vs long press).
+# Neither needs hardware, so there is no excuse for not running them before a
+# flash -- a button that double-fires costs a lab session to find on the bench.
 test:
 	@cc -I. -Wall -Wextra -O1 -o /tmp/test_wallmem test/test_wallmem.c wallmem.c
 	@/tmp/test_wallmem
+	@cc -I. -Wall -Wextra -O1 -std=gnu99 -o /tmp/test_panel test/test_panel.c panel.c
+	@/tmp/test_panel
 
 clean:
 	rm -f *.o *.d modes/*.o modes/*.d *.elf *.hex

@@ -11,6 +11,7 @@
 #include "debug.h"
 #include "power.h"
 #include "resetlog.h"
+#include "panel.h"
 #include "mode.h"
 
 // ============================================================================
@@ -50,6 +51,11 @@ int main(void) {
     Motors_Init();
     Motors_Stop();
 
+    // Straight after the motors: the LED is a status light and a floating pin
+    // is not a status. This also arms the button's pull-up before anything can
+    // read it.
+    Panel_Init();
+
     Debug_Init();
     Timer_Init();          // before sei() so millis() is live immediately
     I2C_Init();
@@ -86,7 +92,11 @@ int main(void) {
         Debug_P("    to override, but expect undefined behaviour if you do."
                 "\r\n");
         Debug_Flush();
-        for (;;) { Motors_Stop(); }
+        // Blink it out too. A halted robot and a flat battery look identical
+        // from across the room, and the serial cable is usually not attached
+        // at the moment this fires.
+        Panel_SetLed(LED_BLINK_FAST);
+        for (;;) { Motors_Stop(); Panel_Task(); }
     }
 #endif
 
@@ -150,6 +160,10 @@ int main(void) {
         // Supply rail, every tick. The dip that resets the MCU lasts a few
         // milliseconds, so anything slower simply never observes it.
         Power_Task();
+
+        // Button debounce and LED blink, at the same fixed rate everything
+        // else runs at -- BUTTON_DEBOUNCE_TICKS is counted in these ticks.
+        Panel_Task();
 
         ctx.rate      = Gyro_Rate(g.z);
         ctx.gx        = g.x;
