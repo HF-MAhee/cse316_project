@@ -509,7 +509,7 @@
 // The sonar sees an opening while the sensor is level with it, but the robot
 // pivots about the AXLE, further back. Drive on by this much so the pivot
 // centre ends up in the middle of the opening.
-#define APPROACH_DISTANCE_CM   (SONAR_TO_AXLE_CM + CORRIDOR_HALF_CM)  // 30 cm
+#define APPROACH_DISTANCE_CM   (SONAR_TO_AXLE_CM + CORRIDOR_HALF_CM)  // 35 cm at 40 cm corridors
 #define APPROACH_TIME_MS       (((uint32_t)APPROACH_DISTANCE_CM * 1000UL) / TRAVEL_SPEED_CMS)
 
 // When the front is blocked we cannot drive the full approach distance --
@@ -714,8 +714,8 @@
 // be clear in that direction BEFORE committing to the pivot. Derived rather
 // than guessed so it tracks the leg settings.
 //
-// CAVEAT: TRAVEL_SPEED_CMS is still the unmeasured placeholder (20), so this
-// figure is only as good as that constant. Measure it and this tightens up.
+// This is only as good as TRAVEL_SPEED_CMS, which is measured but drifts with
+// battery charge -- re-measure it on a fresh pack before trusting the figure.
 #define AVOID_LEG_CM             (((uint32_t)SQUARE_LEG_MS * TRAVEL_SPEED_CMS) / 1000UL)
 #define AVOID_TURN_CLEARANCE_CM  (AVOID_LEG_CM + FRONT_BLOCKED_CM)
 
@@ -793,6 +793,17 @@
 // LEFT drags the wide front corner straight into it, while rotating RIGHT
 // only puts the narrow rear corner there. Hence: turn AWAY from the near wall.
 #define PIVOT_FRONT_RADIUS_CM  17   // sqrt(SONAR_TO_AXLE^2 + (WIDTH/2)^2)
+
+// THIS ONE IS HAND-COMPUTED AND DOES NOT TRACK ITS INPUTS. The preprocessor has
+// no sqrt, so re-measuring the chassis silently leaves the old radius behind --
+// and an under-stated pivot radius means the firmware believes a 180 clears a
+// wall that it actually grazes. Comparing the SQUARES needs no sqrt, so the
+// build can at least refuse to be wrong in the dangerous direction:
+#if ((PIVOT_FRONT_RADIUS_CM) * (PIVOT_FRONT_RADIUS_CM)) < \
+    ((SONAR_TO_AXLE_CM) * (SONAR_TO_AXLE_CM) + \
+     ((ROBOT_WIDTH_CM) / 2) * ((ROBOT_WIDTH_CM) / 2))
+#  error "PIVOT_FRONT_RADIUS_CM is smaller than sqrt(SONAR_TO_AXLE_CM^2 + (ROBOT_WIDTH_CM/2)^2). Recompute it: the chassis sweeps further than the firmware thinks and a 180 will graze the wall."
+#endif
 
 // How close the FRONT sonar may read before a pivot grazes the wall. The wall
 // sits (reading + SONAR_TO_AXLE_CM) from the axle and the corner swings
