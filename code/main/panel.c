@@ -5,15 +5,19 @@
 #  include <avr/io.h>
 #  include "timer.h"
 static void     pins_init(void) {
-    PANEL_DDR  |=  (1 << LED_BIT);        // LED is an output...
-    PANEL_PORT &= ~(1 << LED_BIT);        // ...and starts off
-    PANEL_DDR  &= ~(1 << BUTTON_BIT);     // button is an input...
-    PANEL_PORT |=  (1 << BUTTON_BIT);     // ...with the internal pull-up on
+    // The LED and the button are on different ports, so these are four separate
+    // read-modify-writes rather than two. Both ports already carry other
+    // peripherals -- PORTD has the USART and the motor PWM -- so every one of
+    // these has to be |= or &=, never a plain assignment.
+    LED_DDR     |=  (1 << LED_BIT);          // LED is an output...
+    LED_PORT    &= ~(1 << LED_BIT);          // ...and starts off
+    BUTTON_DDR  &= ~(1 << BUTTON_BIT);       // button is an input...
+    BUTTON_PORT |=  (1 << BUTTON_BIT);       // ...with the internal pull-up on
 }
-static uint8_t  btn_level(void) { return (uint8_t)((PANEL_PIN & (1 << BUTTON_BIT)) ? 1u : 0u); }
+static uint8_t  btn_level(void) { return (uint8_t)((BUTTON_PIN & (1 << BUTTON_BIT)) ? 1u : 0u); }
 static void     led_write(uint8_t on) {
-    if (on) PANEL_PORT |=  (1 << LED_BIT);
-    else    PANEL_PORT &= ~(1 << LED_BIT);
+    if (on) LED_PORT |=  (1 << LED_BIT);
+    else    LED_PORT &= ~(1 << LED_BIT);
 }
 static uint32_t now_ms(void) { return millis(); }
 #else

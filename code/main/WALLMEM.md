@@ -115,20 +115,30 @@ every record's reserved bits, and the CRC.
 
 ## The operator panel
 
-Two pins on **PORTB**, the only port the firmware had nothing on:
-
 ```
 PB0 --[330R]--|>|-- GND      LED, active high
-PB1 -----------o o-- GND     button to ground, internal pull-up, press = LOW
+PD6 -----------o o-- GND     button to ground, internal pull-up, press = LOW
 ```
 
 No external resistor on the button — the internal pull-up holds the pin high
-and the switch pulls it down. PB0 and PB1 are adjacent, so it is one 3-pin
-header (LED, BUTTON, GND), and both sit clear of PB5/PB6/PB7 = MOSI/MISO/SCK,
-so **the ISP programmer can stay plugged in** while the panel is wired. Both
-alternate functions on these pins are inactive in this build: PB0 is T0/XCK
-(Timer0 runs off the internal clock, the USART is asynchronous) and PB1 is T1
-(Timer1 runs off the internal clock).
+and the switch pulls it down, so a press reads LOW; `panel.c` hides that
+inversion.
+
+Both alternate functions are inactive in this build, checked rather than
+assumed. PB0 is T0/XCK: Timer0 runs off the internal clock and the USART is
+asynchronous. PD6 is ICP1: `motors.c` sets `TCCR1B` to `CS11|CS10` with no
+`ICNC1`/`ICES1`, and `TIMSK` never enables `TICIE1`, so Timer1's input capture
+is switched off entirely.
+
+PB0 is clear of PB5/PB6/PB7 = MOSI/MISO/SCK, so **the ISP programmer can stay
+plugged in** while the panel is wired.
+
+PORTD also carries the USART (PD0/PD1) and the motor PWM (PD4/PD5). The panel
+only ever touches PD6 through `sbi`/`cbi`, which are atomic single-bit
+instructions — so there is no read-modify-write window in which an interrupt
+could corrupt a neighbouring pin. PD6 does sit next to PD5, the right wheel's
+PWM: keep the button lead short and away from the motor wiring, though the
+pull-up and the 60 ms debounce absorb the switching noise anyway.
 
 ### What the LED means
 

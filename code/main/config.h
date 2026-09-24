@@ -44,28 +44,41 @@
 #define LEFT_PWM_BIT    PD4
 #define RIGHT_PWM_BIT   PD5
 
-// PORTB -- operator panel (LED + start button)
+// OPERATOR PANEL -- ready LED and start button.
 //
-// PORTB was the only port with nothing on it at all. PB0 and PB1 are adjacent,
-// so the panel is one 3-pin header (LED, BUTTON, GND), and both are clear of
-// PB5/PB6/PB7 = MOSI/MISO/SCK, so the ISP programmer can stay connected while
-// the panel is wired -- which it cannot if the button sits on an ISP pin.
+// The two sit on different ports, so they are declared separately rather than
+// sharing one PANEL_PORT. That is the whole reason panel.c has separate LED_*
+// and BUTTON_* accessors.
 //
-// Both alternate functions on these pins are inactive in this build: PB0 is
-// T0/XCK (Timer0 runs off the internal clock, the USART is asynchronous) and
-// PB1 is T1 (Timer1 runs off the internal clock). Nothing to reassign.
+// PB0 -- ready LED. PORTB has nothing else on it at all, and PB0 is clear of
+// PB5/PB6/PB7 = MOSI/MISO/SCK so the ISP programmer can stay connected.
+// Alternate function T0/XCK is inactive: Timer0 runs off the internal clock and
+// the USART is asynchronous.
 //
-//   PB0 --[330R]--|>|-- GND     LED, active high
-//   PB1 -----------o o-- GND    button to ground, internal pull-up, press = LOW
-#define PANEL_PORT      PORTB
-#define PANEL_DDR       DDRB
-#define PANEL_PIN       PINB
+//   PB0 --[330R]--|>|-- GND        active high
+#define LED_PORT        PORTB
+#define LED_DDR         DDRB
 #define LED_BIT         PB0
-#define BUTTON_BIT      PB1
 
-// Consecutive agreeing samples before the debounced button level moves. At
-// CONTROL_TICK_MS = 20 this is 60 ms, comfortably past the few ms a panel
-// button bounces for, and far too short to feel laggy.
+// PD6 -- start button. Free: PORTD carries the USART on PD0/PD1 and the motor
+// PWM on PD4/PD5, and nothing else. Alternate function ICP1 (Timer1 input
+// capture) is inactive -- motors.c sets TCCR1B to CS11|CS10 only, with no
+// ICNC1/ICES1, and TIMSK never enables TICIE1.
+//
+// No external resistor: the internal pull-up holds the pin high and the switch
+// pulls it to ground, so A PRESS READS LOW. panel.c hides that inversion.
+//
+// Note it sits next to PD5, the right wheel's PWM output. A long button lead
+// run alongside that one can pick up switching noise; the pull-up plus the
+// BUTTON_DEBOUNCE_TICKS filter below absorbs it, but keep the lead short and
+// away from the motor wiring if you have the choice.
+//
+//   PD6 -----------o o-- GND       press = LOW
+#define BUTTON_PORT     PORTD
+#define BUTTON_DDR      DDRD
+#define BUTTON_PIN      PIND
+#define BUTTON_BIT      PD6
+
 #define BUTTON_DEBOUNCE_TICKS  3
 
 // Hold the button this long to throw the saved route away and explore again.

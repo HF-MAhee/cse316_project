@@ -5,14 +5,15 @@
 // ============================================================================
 //  OPERATOR PANEL -- one LED and one push button on PORTB.
 //
-//  PORTB was the only completely unused port on the part, and PB0/PB1 are
-//  adjacent, so the whole panel is one 3-pin header: LED, BUTTON, GND. They are
-//  also clear of PB5/PB6/PB7 (MOSI/MISO/SCK), which matters in practice -- the
-//  ISP programmer can stay plugged in while the panel is wired.
+//  The two are on different ports, which is why config.h declares LED_* and
+//  BUTTON_* separately instead of one PANEL_PORT.
 //
 //  WIRING
 //    PB0 --[330R]--|>|-- GND        LED, active high
-//    PB1 -----------o o-- GND       button to ground, internal pull-up on
+//    PD6 -----------o o-- GND       button to ground, internal pull-up on
+//
+//  PB0 is clear of PB5/PB6/PB7 (MOSI/MISO/SCK), which matters in practice --
+//  the ISP programmer can stay plugged in while the panel is wired.
 //
 //  The button needs no external resistor: the internal pull-up holds the pin
 //  high and pressing it pulls the pin to ground, so a PRESS READS LOW. Panel_
