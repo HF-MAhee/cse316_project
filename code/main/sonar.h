@@ -21,6 +21,11 @@ uint8_t  Sonar_IsValid(sonar_id_t id);
 // 1 when the side is open (beyond OPENING_THRESHOLD_CM, or no echo at all).
 uint8_t  Sonar_IsOpen(sonar_id_t id);
 
+// 1 once this sonar has been pinged since the last Sonar_Flush(). Until then
+// its reading is the SONAR_NO_ECHO placeholder, which Sonar_IsOpen() reports
+// as open.
+uint8_t  Sonar_HasSample(sonar_id_t id);
+
 // 1 when the front is closer than FRONT_BLOCKED_CM.
 uint8_t  Sonar_FrontBlocked(void);
 

@@ -205,6 +205,8 @@ uint16_t Sonar_Median(sonar_id_t id) {
 
 uint16_t Sonar_Latest(sonar_id_t id) { return s[id].latest; }
 
+uint8_t Sonar_HasSample(sonar_id_t id) { return (s[id].hist_n > 0) ? 1 : 0; }
+
 uint8_t Sonar_IsValid(sonar_id_t id) {
     sonar_t *p = &s[id];
     if (p->hist_n == 0) return 0;

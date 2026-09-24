@@ -92,8 +92,16 @@ static uint8_t in_state_for(uint32_t ms) { return ((millis() - s_entered) >= ms)
 static void clear_debounce(void) { s_open_l = s_open_r = s_block_f = s_deadend = 0; }
 
 static void update_debounce(void) {
-    if (Sonar_IsOpen(SONAR_LEFT))  { if (s_open_l  < 255) s_open_l++;  } else s_open_l  = 0;
-    if (Sonar_IsOpen(SONAR_RIGHT)) { if (s_open_r  < 255) s_open_r++;  } else s_open_r  = 0;
+    // A side that has not been pinged since the flush at GO still holds the
+    // SONAR_NO_ECHO placeholder, which reads as open. With one ping per tick
+    // round-robin, the side pinged last is still unmeasured after
+    // OPENING_CONFIRM ticks, so it "confirmed" as an opening and the robot
+    // took a junction in the start cell (FWD_OR_LEFT -> LEFT at GO). Count a
+    // side only once it has really been measured.
+    if (Sonar_HasSample(SONAR_LEFT) && Sonar_IsOpen(SONAR_LEFT))
+                                   { if (s_open_l  < 255) s_open_l++;  } else s_open_l  = 0;
+    if (Sonar_HasSample(SONAR_RIGHT) && Sonar_IsOpen(SONAR_RIGHT))
+                                   { if (s_open_r  < 255) s_open_r++;  } else s_open_r  = 0;
     if (Sonar_FrontBlocked())      { if (s_block_f < 255) s_block_f++; } else s_block_f = 0;
 
     if (Sonar_FrontBlocked() && !Sonar_IsOpen(SONAR_LEFT) && !Sonar_IsOpen(SONAR_RIGHT)) {
