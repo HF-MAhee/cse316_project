@@ -63,7 +63,12 @@ int main(void) {
     Power_Init();
     sei();
 
-    Debug_P("\r\n=== AGV maze solver ===\r\n");
+    // The MODE the image was built with, straight from the Makefile. This used
+    // to say "AGV maze solver" whichever mode was flashed, which is worse than
+    // useless: flashing the wrong image is the single easiest mistake to make
+    // with this project, and the one line of output that could have caught it
+    // was claiming to be something else. Now the first line names the truth.
+    Debug_P("\r\n=== AGV firmware -- MODE=" BUILD_MODE_NAME " ===\r\n");
     ResetLog_Report();
 
     // Idle rail reading, taken before anything draws current. This is the

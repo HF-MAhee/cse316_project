@@ -33,7 +33,7 @@ endif
 # `make clean` is no longer required after every header edit.
 CFLAGS  = -mmcu=$(MCU) -DF_CPU=$(F_CPU) -Os -std=gnu99 -Wall -Wextra \
           -funsigned-char -funsigned-bitfields -ffunction-sections -fdata-sections \
-          -I. -MMD -MP
+          -I. -MMD -MP -DBUILD_MODE_NAME='"$(MODE)"'
 LDFLAGS = -mmcu=$(MCU) -Wl,--gc-sections
 
 # Everything here is mode-independent: drivers, control, and the runner.
