@@ -30,16 +30,15 @@ sleep 1
 # Remove any old screenlog.0 file to avoid appending to previous sessions
 rm -f screenlog.0
 
-# MOST BUILD MODES PRINT ONLY ONCE AT BOOT (the banner) and go quiet after --
-# there is no periodic heartbeat unless the firmware is actively driving and
-# emitting telemetry. Connecting a few seconds after a flash means that
-# one-shot text is already gone: the screen will look identical to a dead
-# USART. If nothing appears below, power-cycle or reset the board NOW, with
-# this terminal already attached, or trigger a state change (press a button)
-# rather than assuming the link is broken.
-echo "If this looks blank: reset/power-cycle the board NOW while this is open,"
-echo "or trigger something (e.g. press a button). Many modes print once at"
-echo "boot and then stay silent until something happens."
+# The start-up banner (reset cause, supply voltage, gyro offsets, which run is
+# armed) prints ONCE at boot. Connecting a few seconds after a flash means it
+# has already gone by; the telemetry CSV lines that follow every 100 ms are
+# still visible, so a completely blank screen means no bytes are arriving at
+# all -- check TX->RX crossover and the shared GND. To see the banner, reset
+# the board with this terminal already open.
+echo "The boot banner prints once. To see it, reset the board NOW while this"
+echo "is open. CSV lines every 100 ms follow; a totally blank screen means no"
+echo "bytes are arriving -- check TX->RX crossover and the shared GND."
 
 # 3. Launch screen with macOS-compatible logging (-L)
 screen -L "$SERIAL_PORT" "$BAUD"

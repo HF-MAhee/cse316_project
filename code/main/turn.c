@@ -72,7 +72,7 @@ static void pulse_tracked(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_m
 // Same, but ramps up to pwm across the pulse instead of stepping to it.
 // Used ONLY for the kick. A pivot kick is the single largest current transient
 // the firmware asks for -- both motors stalled, driven in opposite directions,
-// no back-EMF -- and every failed run in the Mode 10 logs reset at exactly
+// no back-EMF -- and every failed run in the early dead-end test logs reset at exactly
 // this point with the brown-out flag set. Spreading the same impulse over
 // TURN_KICK_MS roughly halves the peak draw.
 static void pulse_ramped(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_ms) {

@@ -29,8 +29,8 @@ typedef struct {
 
     // 1 when the chassis rotated the OPPOSITE way to the one commanded.
     // execute_single() measures |heading|, so a wrong-way turn otherwise
-    // completes and reports success -- fine to spot by eye in Mode 2, silent
-    // navigation garbage in Mode 3. Assumes positive gyro Z = turning LEFT
+    // completes and reports success -- easy to spot by eye on the bench, silent
+    // navigation garbage in a maze run. Assumes positive gyro Z = turning LEFT
     // (so a TURN_RIGHT should accumulate NEGATIVE); if this reads 1 on every
     // turn while the robot visibly turns the right way, that convention is
     // inverted on your board, not the motors.

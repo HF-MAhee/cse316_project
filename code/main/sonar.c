@@ -30,8 +30,8 @@ static uint8_t s_turn = 0;
 //
 // This stores the DISTANCE, not a blocked/clear flag against one fixed
 // threshold. Storing the flag meant every caller was locked to
-// FRONT_BLOCKED_CM, so a mode that wants to close in further than the
-// junction classifier does (Mode 10's dead-end stop) had no way to ask
+// FRONT_BLOCKED_CM, so a caller that wants to close in further than the
+// junction classifier does (a close dead-end stop) had no way to ask
 // without also changing what counts as a junction. A ping that must not vote
 // at all -- no echo, or an implausible jump -- is stored as SONAR_NO_ECHO, so
 // it is above every threshold and counts as clear at any distance.

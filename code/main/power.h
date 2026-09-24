@@ -5,7 +5,7 @@
 // ============================================================================
 //  SUPPLY RAIL MONITOR -- measures VCC using nothing but the MCU itself.
 //
-//  WHY THIS EXISTS. Every failed Mode 10 run reset with the brown-out flag set
+//  WHY THIS EXISTS. Every failed early dead-end test run reset with the brown-out flag set
 //  at a PWM-120 motor kick, but a brown-out is invisible after the fact: the
 //  flag says "the rail went too low" and nothing says how low, for how long, or
 //  how close the surviving runs came to the same edge. A multimeter cannot see

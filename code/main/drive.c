@@ -36,8 +36,8 @@ void Drive_Begin(void) {
 
     // Breakaway kick: the motors will not start from rest at cruise PWM.
     // RAMPED rather than stepped -- a 0 -> KICK_PWM step draws locked-rotor
-    // current with no back-EMF opposing it, and every failed run in the Mode 10
-    // logs browned out at exactly such a kick. Same impulse, spread over
+    // current with no back-EMF opposing it, and every failed run in the early
+    // dead-end test logs browned out at exactly such a kick. Same impulse, spread over
     // KICK_MS, roughly half the peak.
     Power_SetActivity(ACT_DRIVE_KICK);
 #if KICK_RAMP
@@ -147,7 +147,7 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
     // than clip one) quietly cancels the speed reduction: with the floor at
     // MOTOR_MIN_PWM there is very little room under the base, so almost every
     // correction triggers a lift and the mean climbs back to cruise. Measured
-    // in three Mode 10 logs: nominal creep 48, actual mean 50.6 / 52.8 / 56.2,
+    // in three dead-end test logs: nominal creep 48, actual mean 50.6 / 52.8 / 56.2,
     // peaking at 62. Clamping the correction to the available headroom instead
     // means no lift is ever needed and the mean is honest.
     if (base < DRIVE_MEAN_PRESERVE_BELOW) {
