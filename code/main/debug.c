@@ -1,6 +1,7 @@
 #include "config.h"
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <avr/wdt.h>
 #include <stdlib.h>
 #include "debug.h"
 
@@ -103,7 +104,9 @@ void Debug_KVP(const char *flash_key, int32_t v) {
 uint16_t Debug_Dropped(void) { return s_dropped; }
 
 void Debug_Flush(void) {
-    while (s_head != s_tail) { /* let the ISR drain it */ }
+    // The ISR draining the ring is progress: feed the watchdog, or a run of
+    // back-to-back flushes (the end-of-run report) could outlast its timeout.
+    while (s_head != s_tail) { wdt_reset(); }
     while (!(UCSRA & (1 << UDRE)));
 }
 

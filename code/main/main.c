@@ -1,6 +1,7 @@
 #include "config.h"
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <avr/wdt.h>
 
 #include "timer.h"
 #include "i2c.h"
@@ -91,10 +92,24 @@ int main(void) {
 
     Solver_Begin();
 
+    // WATCHDOG. Every I2C wait in i2c.c is unbounded, so a glitch on the gyro
+    // bus parks the CPU for good -- and the motors do NOT stop: Timer1 keeps
+    // generating the last PWM and the direction pins hold. The robot then
+    // drives (or pivots) blind with the log gone silent, which is exactly how
+    // it hit the front wall with the last row reading F=40 and no reset
+    // banner after it. With the watchdog armed, a freeze reboots the chip
+    // within WDTO_250MS, and main() stops the motors first thing. The reset
+    // report then says "watchdog", so the freeze is visible instead of
+    // guessed at. Fed here once per loop pass, and in every blocking wait
+    // (Timer_WaitMs, the turn loop's gyro slot, EEPROM writes).
+    wdt_enable(WDTO_250MS);
+
     for (;;) {
         gyro_xyz_t g;
         tick_ctx_t ctx;
         uint32_t tick_start;
+
+        wdt_reset();
 
         // ---- fixed control tick -----------------------------------------
         if ((int32_t)(millis() - next_tick) < 0) continue;

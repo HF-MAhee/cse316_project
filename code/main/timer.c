@@ -2,6 +2,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
+#include <avr/wdt.h>
 #include "timer.h"
 
 volatile uint32_t g_millis = 0;
@@ -53,12 +54,12 @@ void Timer_WaitMs(uint32_t ms) {
     // caller to know whether sei() has run yet, degrade to a cycle-counted
     // wait. Same duration, no interrupts needed, and it cannot brick the boot.
     if (!(SREG & (1 << SREG_I))) {
-        while (ms--) _delay_ms(1);
+        while (ms--) { wdt_reset(); _delay_ms(1); }
         return;
     }
 
     start = millis();
-    while ((millis() - start) < ms) { /* spin */ }
+    while ((millis() - start) < ms) { wdt_reset(); }
 }
 
 uint8_t Timer_Elapsed(uint32_t start, uint32_t ms) {

@@ -5,6 +5,7 @@
 
 #ifdef __AVR__
 #  include <avr/eeprom.h>
+#  include <avr/wdt.h>
 #  include "debug.h"
 #else
 #  include <stdio.h>
@@ -147,7 +148,7 @@ wm_play_t WallMem_Play(uint8_t f_open, uint8_t l_open, uint8_t r_open,
 
 #ifdef __AVR__
 static uint8_t ee_rd(uint16_t a)             { return eeprom_read_byte((uint8_t *)a); }
-static void    ee_wr(uint16_t a, uint8_t v)  { eeprom_update_byte((uint8_t *)a, v); }
+static void    ee_wr(uint16_t a, uint8_t v)  { wdt_reset(); eeprom_update_byte((uint8_t *)a, v); }
 #else
 /* Host builds (the unit test) keep the same code path over a RAM array, so the
    save/load logic under test is the same logic that runs on the robot. */

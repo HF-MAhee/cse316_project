@@ -1,4 +1,5 @@
 #include "config.h"
+#include <avr/wdt.h>
 #include "turn.h"
 #include "motors.h"
 #include "mpu6050.h"
@@ -40,7 +41,7 @@ static void turn_trace_p(const char *tag_flash) {
 static void turn_sample(uint32_t *next_ms) {
     gyro_xyz_t g;
     int32_t r;
-    while ((int32_t)(millis() - *next_ms) < 0) { /* wait for the slot */ }
+    while ((int32_t)(millis() - *next_ms) < 0) { wdt_reset(); }
     MPU6050_ReadAll(&g);
     Heading_Add(g.z, TURN_TICK_MS);
     Motion_Update(&g);

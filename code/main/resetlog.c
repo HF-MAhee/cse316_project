@@ -53,6 +53,12 @@ void ResetLog_Report(void) {
         Debug_P("  *** UNEXPECTED RESET #");
         Debug_Int((int32_t)s_boot_count);
         Debug_P(" ***\r\n");
+        if (f & (1 << WDRF)) {
+            Debug_Flush();
+            Debug_P("  WATCHDOG -> the firmware FROZE with the motors running\r\n");
+            Debug_P("  (most likely an I2C wait on the gyro that never ended).\r\n");
+            Debug_Flush();
+        }
         Debug_P("  SRAM SURVIVED, so VCC did NOT collapse. This was the\r\n");
         Debug_P("  brown-out detector or the RESET pin, not a broken wire.\r\n");
         if (f & (1 << EXTRF)) {
