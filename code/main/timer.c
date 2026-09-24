@@ -1,6 +1,7 @@
 #include "config.h"
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <util/delay.h>
 #include "timer.h"
 
 volatile uint32_t g_millis = 0;
@@ -44,7 +45,19 @@ uint32_t micros(void) {
 }
 
 void Timer_WaitMs(uint32_t ms) {
-    uint32_t start = millis();
+    uint32_t start;
+
+    // With interrupts off, millis() never advances and the loop below would
+    // spin forever -- which is exactly how Power_Init() once hung every build
+    // at boot with no output of any kind. Rather than trust every future
+    // caller to know whether sei() has run yet, degrade to a cycle-counted
+    // wait. Same duration, no interrupts needed, and it cannot brick the boot.
+    if (!(SREG & (1 << SREG_I))) {
+        while (ms--) _delay_ms(1);
+        return;
+    }
+
+    start = millis();
     while ((millis() - start) < ms) { /* spin */ }
 }
 

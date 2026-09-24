@@ -43,6 +43,13 @@ void Mode_PreGyro(void) {
     Debug_P("Press the button to start the LED blinking; press again to"
             " stop.\r\n");
     Debug_P("Hold it for 2 s to fire the long-press event instead.\r\n\r\n");
+    // The debug TX ring is DEBUG_TX_BUF (192) bytes and DROPS on overflow rather
+    // than blocking -- right for the control loop, wrong for a banner. This
+    // block plus the resting-level report below is ~255 bytes pushed far
+    // faster than 38400 baud drains, so without this flush the line that
+    // matters most, "raw PD6 = ...", was the one silently thrown away. This is
+    // start-up, before any timing matters, so blocking here costs nothing.
+    Debug_Flush();
 
     // Resting level, before anyone touches anything. With the internal pull-up
     // on and a normally-open switch this MUST read 1. Reading 0 here is the

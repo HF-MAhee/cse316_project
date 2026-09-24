@@ -1,5 +1,6 @@
 #include "config.h"
 #include <avr/io.h>
+#include <util/delay.h>
 #include "power.h"
 #include "timer.h"
 
@@ -35,7 +36,14 @@ void Power_Init(void) {
 
     // The bandgap needs time to start up, and the first conversion after
     // enabling the ADC is always the least accurate. Throw both away.
-    Timer_WaitMs(2);
+    //
+    // _delay_ms, NOT Timer_WaitMs. main() calls this BEFORE sei(), and
+    // Timer_WaitMs spins on millis(), which only advances inside the Timer0
+    // interrupt -- so with interrupts still off it waited forever. That hung
+    // EVERY mode at boot, silently, before the banner could print: no USART
+    // output, no button, nothing, from the day this line went in. _delay_ms is
+    // a cycle-counted busy loop and needs no interrupts at all.
+    _delay_ms(2);
     ADCSRA |= (1 << ADSC);
     while (ADCSRA & (1 << ADSC)) { }
     (void)ADCW;

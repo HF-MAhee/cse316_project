@@ -116,6 +116,32 @@ test:
 	@cc -I. -Wall -Wextra -O1 -std=gnu99 -o /tmp/test_panel test/test_panel.c panel.c
 	@/tmp/test_panel
 
+# Boot every mode in the simavr simulator and check it gets as far as printing
+# its banner. This is the check that was missing when Power_Init() hung every
+# build at boot for ten days: everything compiled, every host test passed, and
+# not one byte ever left the chip. Compiling proves nothing about whether main()
+# reaches its first line of output; running it does.
+#
+# Needs simavr (Linux: apt install simavr, macOS: brew install simavr). Skips
+# cleanly without it rather than failing, since it is not part of the build.
+BOOT_MODES = sonar corridor turn maze cone square turndbg avoid gyrodiag openavoid deadend wallmem panel
+boot-test:
+	@command -v simavr >/dev/null 2>&1 || { echo "boot-test: simavr not installed, skipping"; exit 0; }; \
+	fail=0; \
+	for m in $(BOOT_MODES); do \
+	  $(MAKE) --no-print-directory clean >/dev/null; \
+	  $(MAKE) --no-print-directory MODE=$$m >/dev/null 2>&1 || { printf "  %-10s BUILD FAILED\n" $$m; fail=1; continue; }; \
+	  timeout 6 simavr -m $(MCU) -f 16000000 $(TARGET).elf > /tmp/boot.$$m.log 2>&1; \
+	  if grep -q "=== AGV firmware -- MODE=$$m ===" /tmp/boot.$$m.log; then \
+	    printf "  %-10s boots, banner printed\n" $$m; \
+	  else \
+	    printf "  %-10s DID NOT REACH ITS BANNER -- hung at boot\n" $$m; fail=1; \
+	  fi; \
+	done; \
+	$(MAKE) --no-print-directory clean >/dev/null; \
+	if [ $$fail -ne 0 ]; then echo "boot-test: FAILED"; exit 1; fi; \
+	echo "boot-test: every mode boots"
+
 # Standalone LED check. Depends on NOTHING in this project -- not config.h, not
 # the timer, not the USART. If this blinks and MODE=panel does not, the hardware
 # is fine and the fault is in the firmware; if this does not blink, stop reading
@@ -135,4 +161,4 @@ clean:
 
 -include $(OBJ:.o=.d)
 
-.PHONY: all banner size flash clean list-modes check-all test blink blink-flash
+.PHONY: all banner size flash clean list-modes check-all test blink blink-flash boot-test
