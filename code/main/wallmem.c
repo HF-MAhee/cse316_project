@@ -294,6 +294,13 @@ void WallMem_Dump(void) {
         Debug_P(" -> ");
         Debug_StrP(WallMem_TurnName(WallMem_Turn(rec)));
         Debug_P("\r\n");
+        // Flush EVERY record, not just at the end. Each line is ~40 bytes and
+        // the debug TX ring is 192 and drops on overflow, so a whole-log dump
+        // (19 records for the demo maze, ~700 bytes) used to lose everything
+        // after the fourth record -- measured in simavr: 5 of 19 lines out, 531
+        // bytes dropped. This runs only when the robot is stopped (end of run
+        // 1, or at boot before run 2), so blocking here costs nothing.
+        Debug_Flush();
     }
     Debug_Flush();
 }

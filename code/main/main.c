@@ -143,11 +143,5 @@ int main(void) {
         // cannot itself manufacture overruns.
         Telemetry_Tick(&ctx);
 
-        // ---- global safety ----------------------------------------------
-        if ((millis() - run_start) > MAX_RUN_MS) {
-            Motors_Stop();
-            Debug_P("RUN LIMIT\r\n");
-            for (;;) { }
-        }
     }
 }

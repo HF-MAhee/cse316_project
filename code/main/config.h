@@ -626,7 +626,10 @@
 // solver treats a timeout as a dead end, through the same decision path.
 #define MAX_LEG_MS             10000UL
 
-// Global run limit.
+// Longest a single RUN may keep moving, counted from its button press. Time
+// spent armed and waiting between runs does not count. A run that hits this
+// stops and the LED fast-blinks; power-cycle to recover (the saved route in
+// EEPROM survives).
 #define MAX_RUN_MS             300000UL   // 5 minutes
 
 // Settle time after the start button is pressed, before the robot moves: long

@@ -285,6 +285,26 @@ void Solver_Tick(const tick_ctx_t *t) {
     int16_t rate = t->rate;
     uint8_t f, l, r;
 
+    // Per-RUN time limit, counted from the button press (s_run_started is set
+    // on GO), and only while the robot is actually moving.
+    //
+    // It used to be a global limit in main.c counted from BOOT, which fought
+    // the two-run flow: the robot legitimately sits armed and waiting between
+    // runs, so explore + carry-back + speed run could easily pass five minutes
+    // since power-on, at which point the whole firmware froze in a for(;;) --
+    // mid-run-2 if unlucky, with the LED frozen too. A run that really does go
+    // on this long is lost, so stop it and say so, but keep the loop alive.
+    if (s_state >= WM_DRIVING && s_state <= WM_RECOVER &&
+        (millis() - s_run_started) > MAX_RUN_MS) {
+        Drive_Stop();
+        Debug_P("*** RUN LIMIT: this run has been moving for over ");
+        Debug_Int((int32_t)(MAX_RUN_MS / 1000UL));
+        Debug_P(" s -- stopped.\r\n");
+        Debug_Flush();
+        enter(WM_FAULT);
+        return;
+    }
+
     switch (s_state) {
 
     case WM_ARMED:
@@ -503,6 +523,10 @@ void Solver_Tick(const tick_ctx_t *t) {
             Debug_P(" records, stray U-turns=");
             Debug_Int((int32_t)stray);
             Debug_P("\r\n");
+            // The failure explanation below is ~184 bytes on its own; on top of
+            // this line it would overflow the 192-byte debug ring and lose the
+            // part that says what went wrong. Stopped here, so blocking is free.
+            Debug_Flush();
 
             s_collapse_failed = (uint8_t)((stray || WallMem_Overflowed()) ? 1u : 0u);
             if (s_collapse_failed) {
