@@ -468,7 +468,7 @@
 //  9. JUNCTION / OPENING DETECTION
 // ---------------------------------------------------------------------------
 // A side reads "open" beyond this. Corridor half-width plus margin.
-#define OPENING_THRESHOLD_CM   (CORRIDOR_HALF_CM + 10)   // 25 cm
+#define OPENING_THRESHOLD_CM   (CORRIDOR_HALF_CM + 10)   // 30 cm at 40 cm corridors
 
 // Front is considered blocked closer than this. Must be generous enough that
 // at a T-junction the front wall registers as blocked BEFORE the two side
