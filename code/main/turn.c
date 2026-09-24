@@ -379,14 +379,24 @@ void Turn_CentreOnWall(void) {
             uint32_t t0 = millis();
             motor_dir_t d = (err > 0) ? DIR_FWD : DIR_REV;
             // Breakaway kick first -- the chassis stalls below ~60 PWM from
-            // rest -- then the rest of the step at cruise PWM.
-            Motors_SetLeft(d, KICK_PWM);
-            Motors_SetRight(d, KICK_PWM);
-            while ((millis() - t0) < KICK_MS) turn_sample(&next_ms);
+            // rest -- RAMPED like every other kick: a step to KICK_PWM with
+            // both wheels stalled is the largest current spike there is, and
+            // the kicks are where this robot browns out.
+            Power_SetActivity(ACT_DRIVE_KICK);
+            while ((millis() - t0) < KICK_MS) {
+                uint8_t p = (uint8_t)(MOTOR_MIN_PWM +
+                    (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * (millis() - t0)) / KICK_MS));
+                Motors_SetLeft(d, p);
+                Motors_SetRight(d, p);
+                Power_Task();
+                turn_sample(&next_ms);
+            }
+            Power_SetActivity(ACT_DRIVING);
             Motors_SetLeft(d, UTURN_CENTRE_PWM);
             Motors_SetRight(d, UTURN_CENTRE_PWM);
             while ((millis() - t0) < ms) turn_sample(&next_ms);
             Motors_Stop();
+            Power_SetActivity(ACT_IDLE);
             settle_tracked(GYRO_SETTLE_MS, &next_ms);
         }
     }
