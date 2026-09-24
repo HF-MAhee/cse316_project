@@ -9,7 +9,6 @@ OBJCOPY = avr-objcopy
 #      make            build it
 #      make flash      build it and flash it (USBasp)
 #      make test       host-side unit tests -- no hardware needed
-#      make sim        both runs of the demo maze, closed loop, 40 simulated robots
 #      make boot-test  boot the real image in the simavr simulator
 # ---------------------------------------------------------------------------
 
@@ -77,18 +76,9 @@ boot-test: $(TARGET).elf
 	fi; \
 	echo "boot-test: boots, calibrates, arms for run 1, no debug bytes dropped"
 
-# The whole two-run job, closed loop: the real solver, drive, turn, heading and
-# sonar code against a physical model of the demo maze (test/sim/sim.c), over
-# 40 randomised robots -- motor strength, coast, gearbox slack, gyro error,
-# sonar dropouts and wall-end echoes. Every robot must explore with exactly
-# the designed decisions, collapse to the 5-record route, replay it, and
-# never touch a wall.
-sim:
-	@test/sim/run.sh 40 1
-
 clean:
 	rm -f *.o *.d *.elf *.hex
 
 -include $(OBJ:.o=.d)
 
-.PHONY: all size flash test sim boot-test clean
+.PHONY: all size flash test boot-test clean

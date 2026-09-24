@@ -55,28 +55,28 @@ typedef struct {
     int32_t final_error_tenths;
     uint8_t converged;
 
-    // Where the chassis ended up relative to the maze grid, tenths of a
-    // degree, + = left of it. This is the number that says whether the robot
-    // will drive off square -- achieved_tenths only says how far it rotated.
-    int32_t grid_error_tenths;
+    // The same leftover error, but expressed in the NEXT leg's frame and in
+    // raw LSB*ms: how far the chassis sits from the heading it should now
+    // hold, positive = rotated LEFT of it. Turn_Execute() zeroes the heading
+    // accumulator when it finishes, so without carrying this forward every
+    // turn's residual is simply discarded and accumulates into the path.
+    // Hand it straight to Drive_StraightHold() -- the direction sign is
+    // already folded in here so call sites cannot get it backwards.
+    int32_t residual_raw;
 } turn_result_t;
 
-// Blocking closed-loop pivots onto the next maze-grid heading (see
-// Heading_GridStep). Both recalibrate the gyro and flush the sonar afterwards:
-// every filtered reading was taken pointing somewhere else.
+// Blocking closed-loop pivot. Sonar is meaningless while rotating, so the
+// caller should flush the sonar history afterwards.
+void Turn_Execute(uint16_t degrees, turn_dir_t dir, turn_result_t *res);
+
 void Turn_90(turn_dir_t dir, turn_result_t *res);
 
 // Reverse direction. `dir` is the side the chassis ROTATES TOWARDS, and it
 // matters physically, not just cosmetically: an in-place pivot is asymmetric.
-// The FRONT corners swing ~17 cm from the axle into the side being
+// The FRONT corners swing PIVOT_RADIUS_CM from the axle into the side being
 // turned towards, while the rear corners only reach about 10.6 cm out the
 // other side. So a 180 needs roughly 6 cm MORE free space on the side it
 // rotates into. In a dead end, pick the direction AWAY from the nearer wall.
 void Turn_180(turn_dir_t dir, turn_result_t *res);
-
-// Facing a wall: creep until the axle is CORRIDOR_HALF_CM from it, so a pivot
-// here happens in the middle of the cell. Does nothing if no wall is within
-// UTURN_CENTRE_MAX_CM ahead.
-void Turn_CentreOnWall(void);
 
 #endif

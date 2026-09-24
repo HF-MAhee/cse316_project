@@ -14,19 +14,6 @@ void Sonar_Task(void);
 uint16_t Sonar_Median(sonar_id_t id);  // filtered, for smooth steering
 uint16_t Sonar_Latest(sonar_id_t id);  // most recent raw, for fast detection
 
-// Each sensor is pinged only every third control tick (round-robin), so
-// "the same answer on N consecutive ticks" is really ONE ping read N times.
-// Anything that wants N independent confirmations must count Sonar_Seq()
-// changes instead. Sonar_HasSample() is 0 from Sonar_Flush() until that
-// sensor's first ping -- until then its "reading" is a placeholder, and the
-// placeholder is NO_ECHO, which Sonar_IsOpen() reports as open.
-uint8_t  Sonar_Seq(sonar_id_t id);
-// The latest ping in millimetres, or 0 when it was not a usable distance (no
-// echo, too close, or an implausible jump). Same ping as Sonar_Latest().
-uint16_t Sonar_LatestMm(sonar_id_t id);
-uint16_t Sonar_PingNow(sonar_id_t id);   // blocking single ping, filters untouched
-uint8_t  Sonar_HasSample(sonar_id_t id);
-
 // 1 when the value can be trusted: fresh, in range, and not taken while the
 // chassis was rocking.
 uint8_t  Sonar_IsValid(sonar_id_t id);

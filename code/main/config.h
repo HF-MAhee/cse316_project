@@ -101,12 +101,6 @@
 // in an opening before it turns.
 #define SONAR_TO_AXLE_CM       15   // measured
 
-// Same, for the two SIDE sonars: how far ahead of the axle their faces sit.
-// A side opening is detected by these, so this -- not the front figure -- is
-// what decides where the robot stops to pivot into a side branch.
-// *** MEASURE IT. *** 12 is an estimate from the logs, not a measurement.
-#define SIDE_SONAR_TO_AXLE_CM  12
-
 // Cruise speed in cm/s at DRIVE_BASE_PWM. With no working encoders, every
 // distance in this firmware is (time x speed), so this must be measured.
 //
@@ -201,9 +195,6 @@
 // distance, a sudden loss of echo means the wall got CLOSER, not that it
 // vanished. Walls do not disappear in 60 ms.
 #define SONAR_NEAR_LATCH_CM    12
-// ...but for at most this many consecutive lost echoes. Past that the wall
-// is not "too close to measure", it is gone (see sonar.c).
-#define SONAR_NEAR_LATCH_PINGS 3
 
 // A reading older than this is stale and must not be trusted.
 #define SONAR_STALE_MS         250
@@ -306,35 +297,6 @@
 #define WALL_KD_NUM            1
 #define WALL_KD_DEN            65
 
-// Heading hold onto the maze grid (see Heading_GridError). 1.5 PWM counts per
-// degree off the grid: a robot knocked 5 degrees off by the drive-off kick
-// gets 7-8 counts of correction and is square again within ~15 cm, where
-// before nothing brought it back at all. Equal to the wall gain per cm, so a
-// 1 cm centring error is worth tilting ~1 degree toward the centre line.
-// Raise it if legs still start at an angle; lower it if the robot visibly
-// weaves after a turn.
-#define HEADING_KP_NUM         3
-#define HEADING_KP_DEN         2
-#define HEADING_MAX_CORR       15   // cap: a wrong grid must not steer hard
-
-// Wall alignment of the grid heading (drive.c, align_to_walls). Each side
-// wall's distance is fitted against time over its last WALL_ALIGN_SAMPLES
-// pings (one per 60 ms, so ~0.5 s and ~15 cm of travel) at millimetre
-// resolution; the slope over the cruise speed is the robot's angle to the
-// wall, and the grid moves 1/GAIN_DEN of the way toward it per fresh ping.
-// Only a clean wall counts: within SIDE_CENTRED_CM +/- BAND, no jump between
-// pings, and a straight line to within MAX_RMS (the end of a wall curves).
-#define WALL_ALIGN_SAMPLES      8
-#define WALL_ALIGN_GAIN_DEN     6
-#define WALL_ALIGN_MAX_JUMP_CM  3
-#define WALL_ALIGN_BAND_CM      6
-#define WALL_ALIGN_MAX_RMS_MM   4
-#define WALL_ALIGN_DELAY        6       // pings the wall must go on before an estimate counts
-#define WALL_ALIGN_AGREE_10     25      // both walls in view: must agree within 2.5 deg
-#define WALL_ALIGN_PAIR_MS      150     // ...if both have an estimate this recent
-#define WALL_ALIGN_MAX_RATE_LSB 1300    // ~20 deg/s
-#define WALL_ALIGN_MAX_STEP_10  80      // tenths: one estimate is worth at most 8 deg
-
 // The correction is a DIFFERENTIAL about DRIVE_BASE_PWM, so its steering
 // authority is the ratio corr/base, not its absolute value. Lowering the
 // base speed without lowering this makes steering MORE violent, not less.
@@ -395,8 +357,7 @@
 #define WALL_RECOVERY_REV_PWM   100  // straight reverse, both wheels
 #define WALL_RECOVERY_REV_MS    250
 #define WALL_RECOVERY_PIVOT_PWM 90   // in-place pivot, away from the wall
-#define WALL_RECOVERY_PIVOT_MS  300  // upper bound; normally ends on angle:
-#define WALL_RECOVERY_PIVOT_DEG 12   // enough to point away, not into a new corridor
+#define WALL_RECOVERY_PIVOT_MS  300
 
 // The timer alone was too blunt a trigger: it fired whenever the robot was
 // still inside the emergency band after WALL_STUCK_MS, even when the steering
@@ -448,50 +409,13 @@
 // derived from it.
 #define FRONT_BLOCKED_CM       25
 
-// Consecutive FRESH PINGS of the front sensor before "blocked" counts.
-// Pings, not control ticks: each sensor is pinged every third tick, so the old
-// per-tick count of 2 was met by a single ping and one stray echo could
-// decide a turn.
-#define OPENING_CONFIRM        3
+// Consecutive confirmations before believing a side opening.
+#define OPENING_CONFIRM        2
 
-// A SIDE opening is a vote: OPENING_VOTES of the last OPENING_WINDOW fresh
-// pings must read open. Not an unbroken run, for two reasons found in
-// simulation: HC-SR04 dropouts read "open" and come in bursts (runs of 2-3
-// against a solid wall each logged a phantom junction), and an echo off a
-// wall end part-way across a real opening reset a run-count so the opening
-// was never confirmed at all. An opening is dated from its FIRST open ping
-// (solver.c, side_ping), so the vote costs no positioning accuracy.
-// 4 of 6: at a 4% dropout rate, 3 of 5 still happened by chance about once
-// per run in simulation; 4 of 6 is ~30x rarer, and a real opening still
-// passes with one stray echo in it.
-#define OPENING_VOTES          4
-#define OPENING_WINDOW         6
-
-// Once something other than a plain corridor is seen, drive on this far
-// before classifying it. Two reasons, both straight out of the real logs:
-//  - the front wall of a corner or T is still ~33 cm off when the side opens,
-//    beyond FRONT_BLOCKED_CM, so deciding at once logged the E1 corner as
-//    FWD_OR_LEFT. After 18 cm it is ~15 cm off and unambiguous.
-//  - near the start of an opening the END of the wall stub beside it still
-//    echoes from well off-axis (the left sonar read ~18 cm with C1 wide open),
-//    so one side of a T can look shut for the first several cm.
-// Dead ends need no special case: a front wall with both sides shut simply
-// keeps LOOKing until FRONT_STOP_CM, so the robot turns in the middle of the
-// dead-end cell rather than at its mouth.
-#define JUNCTION_LOOK_CM       18
-#define JUNCTION_LOOK_MS       (((uint32_t)JUNCTION_LOOK_CM * 1000UL) / TRAVEL_SPEED_CMS)
-
-// Going straight through a junction, its openings stay masked until the
-// junction cell has been crossed: CORRIDOR_WIDTH_CM from where the opening
-// began, plus a margin for speed error. After that, an opening belongs to the
-// next cell. See expire_latch() in solver.c. The margin is generous on
-// purpose: expiring late only means the next cell's opening is counted afresh
-// (and still dated from the cell edge), while expiring early -- the robot a
-// little slower than TRAVEL_SPEED_CMS -- logs the same junction twice.
-#define FWD_PASS_MARGIN_CM     12
-#define FWD_PASS_MARGIN_MS     (((uint32_t)FWD_PASS_MARGIN_CM * 1000UL) / TRAVEL_SPEED_CMS)
-#define FWD_PASS_MS            ((((uint32_t)(CORRIDOR_WIDTH_CM + FWD_PASS_MARGIN_CM)) * 1000UL) / \
-                                TRAVEL_SPEED_CMS)
+// Consecutive confirmations before believing a dead end (all three walled).
+// Higher than OPENING_CONFIRM: a spurious U-turn is expensive, and in run 1 it
+// is also written into the log.
+#define DEADEND_CONFIRM        3
 
 // Front-obstacle detection uses VOTING over a window, not consecutive hits.
 //
@@ -509,58 +433,19 @@
 #define FRONT_VOTE_THRESHOLD   2
 
 // ---------------------------------------------------------------------------
-//  10. APPROACH OFFSET  (the sonars sit ahead of the axle)
+//  10. APPROACH OFFSET  (front-mounted sonar compensation)
 // ---------------------------------------------------------------------------
-// A side sonar sees an opening while the sensor is level with it, but the
-// robot pivots about the AXLE, further back. Drive on by APPROACH_DISTANCE_CM
-// so the pivot centre ends up in the middle of the opening.
-//
-// How late a side opening is SEEN, in cm of travel past where it really
-// starts. Every opening begins where a wall ends, and the end of a wall keeps
-// returning an echo from well off-axis after the sonar has passed it -- so the
-// reading only jumps to "open" some way in. Measured from the real logs: at
-// the E1 corner the left sonar opened at F=33, where the geometry says 40.
-// The solver dates each opening this much earlier than it was seen.
-#define OPENING_DETECT_LAG_CM  7
-#define OPENING_DETECT_LAG_MS  (((uint32_t)OPENING_DETECT_LAG_CM * 1000UL) / TRAVEL_SPEED_CMS)
-
-// Measured from the moment the SIDE sonar reached the opening (dated back by
-// OPENING_DETECT_LAG_CM), so it is the side sonar's offset that counts.
-#define APPROACH_DISTANCE_CM   (SIDE_SONAR_TO_AXLE_CM + CORRIDOR_HALF_CM)  // 32 cm
+// The sonar sees an opening while the sensor is level with it, but the robot
+// pivots about the AXLE, further back. Drive on by this much so the pivot
+// centre ends up in the middle of the opening.
+#define APPROACH_DISTANCE_CM   (SONAR_TO_AXLE_CM + CORRIDOR_HALF_CM)  // 35 cm at 40 cm corridors
 #define APPROACH_TIME_MS       (((uint32_t)APPROACH_DISTANCE_CM * 1000UL) / TRAVEL_SPEED_CMS)
-
-// Classification happens part-way through the approach, so it has to fit.
-#if (JUNCTION_LOOK_CM) >= (APPROACH_DISTANCE_CM)
-#  error "JUNCTION_LOOK_CM must be shorter than APPROACH_DISTANCE_CM: the robot would pass its turning point before deciding to turn."
-#endif
-
-// After a pivot the axle is at the cell centre, so the side sonars leave the
-// turn cell after this much travel (0 if they already overhang it). Used to
-// date an opening that is already open on the first ping of the next leg.
-#define SIDE_EDGE_CM           ((CORRIDOR_HALF_CM > SIDE_SONAR_TO_AXLE_CM) ? \
-                                (CORRIDOR_HALF_CM - SIDE_SONAR_TO_AXLE_CM) : 0)
-#define SIDE_EDGE_MS           (((uint32_t)SIDE_EDGE_CM * 1000UL) / TRAVEL_SPEED_CMS + \
-                                KICK_MS + DRIVE_SPINUP_MS)
-
-// Time lost getting up to TRAVEL_SPEED_CMS from rest: every time-based
-// distance measured from a standing start is short by about this much. From
-// the real logs: the first 400 ms after a turn covered ~4 cm, not 12.
-#define DRIVE_SPINUP_MS        250
 
 // When the front is blocked we cannot drive the full approach distance --
 // stop this far from the wall instead and pivot there. In practice this, not
 // APPROACH_TIME_MS, is what ends the approach at any junction with a front
 // wall (T, forced turn, dead end).
-// Confirmed by two consecutive pings (one more ping of travel than a single
-// reading), so this is 2 cm more than the 12 the real robot stopped well at:
-// it rolled on to F=6-7, putting the axle within a cm of the cell centre.
-#define FRONT_STOP_CM          14
-
-// Approaching a front wall, give up waiting for FRONT_STOP_CM after this long
-// and turn where the robot is. Classification needs the wall within
-// FRONT_BLOCKED_CM, so this is ~3x the time to close the remaining distance.
-#define APPROACH_WALL_TIMEOUT_MS \
-    ((((uint32_t)(FRONT_BLOCKED_CM - FRONT_STOP_CM) * 1000UL) / TRAVEL_SPEED_CMS) * 3UL)
+#define FRONT_STOP_CM          12
 
 // ---------------------------------------------------------------------------
 //  11. EXIT DETECTION
@@ -580,16 +465,16 @@
 
 // Drive clear of that window before believing it. The margin covers the sonar
 // refresh (3 x CONTROL_TICK_MS per sensor) and speed error.
-#define EXIT_CONFIRM_MARGIN_CM 15
+#define EXIT_CONFIRM_MARGIN_CM 10
 #define EXIT_CONFIRM_CM        (EXIT_FALSE_WINDOW_CM + EXIT_CONFIRM_MARGIN_CM)
 #define EXIT_CONFIRM_MS        (((uint32_t)EXIT_CONFIRM_CM * 1000UL) / TRAVEL_SPEED_CMS)
 
 // The margin has to outlast the EVIDENCE, not just the geometry. One sonar
 // refresh is CONTROL_TICK_MS x 3 sensors (they are pinged round-robin), and a
-// side opening needs OPENING_VOTES of them before it counts -- so this much
+// side opening needs OPENING_CONFIRM of them before it counts -- so this much
 // travel passes before the classifier can even change its mind:
 #define EXIT_CONFIRM_SETTLE_CM \
-    (((CONTROL_TICK_MS) * 3 * (OPENING_VOTES) * (TRAVEL_SPEED_CMS)) / 1000)
+    (((CONTROL_TICK_MS) * 3 * (OPENING_CONFIRM) * (TRAVEL_SPEED_CMS)) / 1000)
 
 // Below twice that, the window is shorter than the evidence it is waiting for
 // and a T-junction can read as the maze exit -- the run then ends in the middle
@@ -597,13 +482,7 @@
 // EXIT_CONFIRM_CM: that is defined as window + margin, so comparing it against
 // the window can never fail and would be a guard that only looks like one.
 #if (EXIT_CONFIRM_MARGIN_CM) < (2 * (EXIT_CONFIRM_SETTLE_CM))
-#  error "EXIT_CONFIRM_MARGIN_CM is below two sonar-confirm periods of travel: a T-junction could read as the maze exit. Raise it, slow TRAVEL_SPEED_CMS, or lower OPENING_VOTES."
-#endif
-
-// The exit is confirmed by LOOKing past the junction window, so the look
-// itself must end first.
-#if (JUNCTION_LOOK_CM) > (EXIT_CONFIRM_CM)
-#  error "JUNCTION_LOOK_CM exceeds EXIT_CONFIRM_CM: the exit would be confirmed before the look finished."
+#  error "EXIT_CONFIRM_MARGIN_CM is below two sonar-confirm periods of travel: a T-junction could read as the maze exit. Raise it, slow TRAVEL_SPEED_CMS, or lower OPENING_CONFIRM."
 #endif
 
 // ASSUMPTION, not checkable at compile time: the maze has no 4-way crossroads.
@@ -632,31 +511,26 @@
 // Raw LSB; 65.5 LSB per deg/sec, so 200 ~= 3 deg/sec.
 #define TURN_STILL_LSB         200
 
-// Cut the main sweep this far short of the target and let the chassis coast
-// the rest. This is only the STARTING estimate: turn.c measures the real coast
-// on every turn and learns it (half-weight per turn), because it moves with
-// the battery, the tyres and the floor.
+// Cut the main sweep this early. Was 4, which was not a coast estimate at all
+// -- measured coast from sweep exit to rest is 36.7/40.2/40.9/41.0/46.4/42.3
+// degrees (mean 41.3) because the sweep is still ACCELERATING when it exits
+// (rate climbed monotonically to ~24000 LSB, ~370 deg/sec, never reaching
+// terminal velocity in 86 degrees). The result was a physical swing to ~128
+// degrees followed by 4-5 reverse nudges back to 90: correct final angle,
+// wrong mechanism, and a 38 degree excursion the corridor has to absorb.
 //
-// History, because it explains the logs: an earlier, faster build coasted
-// ~41 degrees, so this was 35. The current robot coasts ~22 (usart_20260924:
-// sweep cut at 55, landed 71-81 on every turn), so each turn stopped 10-20
-// short and burned 2-5 nudges -- the visible "compensating" after each pivot,
-// and the tyre scrub that moved the pivot point. 25 lands the first turn of a
-// run within a few degrees; the learning takes it from there.
+// 35 is derived, not guessed: cutting at 55 degrees leaves the chassis at
+// ~20800 LSB instead of ~22700, and coast scales somewhere between linearly
+// and quadratically with cut-off rate, which puts the landing at 89.6..92.8
+// degrees. The nudge loop trims either end of that easily -- and it corrects
+// in BOTH directions, so an over- or under-estimate here is self-healing.
+// To confirm on the bench, watch the per-turn trace (TURN_TRACE): expect the
+// initial error near zero and 0-1 nudges.
 //
-// It only has to be right for 90 degree turns: a 180 is two of them.
-#define TURN_STOP_MARGIN_DEG   25
-
-// Coast measurements outside this range are not learned from: below it the
-// sweep was probably cut by a timeout, above it the chassis hit something.
-#define TURN_COAST_MIN_DEG     5
-#define TURN_COAST_MAX_DEG     60
-
-// Before each quarter turn the chassis may already be a few degrees off the
-// maze grid (see Heading_GridError), and the turn aims at the grid, not at
-// "+90 from here". Beyond this the grid is not believed -- something knocked
-// the robot -- and the turn re-anchors on wherever it points.
-#define TURN_GRID_MAX_DEV_DEG  25
+// This value is calibrated for 90 degree turns. A single 180 degree sweep
+// would exit far faster and coast much further, which is the real reason
+// TURN_180_AS_TWO_90S must stay 1.
+#define TURN_STOP_MARGIN_DEG   35
 
 // 2 degrees is about the floor worth chasing: the stream shows ~1 degree of
 // mechanical settling jitter (tyres unwinding) after the rotation stops.
@@ -669,18 +543,20 @@
 // or overcorrects a 1 degree residual by the same amount used for a 6 degree
 // one -- which is how a "converging" turn ends up oscillating around the
 // target instead of settling into TURN_DEADBAND_DEG.
-// ms = clamp(error_deg * learned ms/deg, MIN, MAX). TURN_NUDGE_MS_PER_DEG is
-// the starting value; turn.c re-measures what each nudge actually achieved and
-// keeps the estimate inside [.._MIN, .._MAX]. The real logs put this robot at
-// ~6-12 ms per degree (40 ms nudges moved it 3-8 degrees).
+// ms = clamp(error_deg * TURN_NUDGE_MS_PER_DEG, MIN, MAX). Tune
+// TURN_NUDGE_MS_PER_DEG from the per-turn trace: still 2+ nudges of the same
+// sign in a row -> raise it; nudges routinely overshoot the deadband the other
+// way -> lower it.
 #define TURN_NUDGE_MS_MIN      8
 #define TURN_NUDGE_MS_MAX      40
-#define TURN_NUDGE_MS_PER_DEG  8    // ms per whole degree, starting estimate
-#define TURN_NUDGE_MS_PER_DEG_MIN  3
-#define TURN_NUDGE_MS_PER_DEG_MAX  20
+#define TURN_NUDGE_MS_PER_DEG  6    // ms per whole degree of residual error
 
-#define TURN_MAX_NUDGES        8
+#define TURN_MAX_NUDGES        5
 #define TURN_TIMEOUT_MS        7000 // safety: abort a turn that never finishes
+
+// Do a 180 as two 90s with a settle between. Usually more accurate than one
+// long sweep because momentum has less time to build. Set 0 for a single 180.
+#define TURN_180_AS_TWO_90S    1
 
 // Per-phase turn trace: each phase boundary prints the heading it ended at
 // (about 10 short lines per turn, ~250 bytes over ~1.5 s: no risk to the byte
@@ -705,22 +581,6 @@
 // coin flip, so UTURN_TIE_DIR is used instead of chasing the noise.
 #define UTURN_DECIDE_MARGIN_CM 3
 #define UTURN_TIE_DIR          TURN_RIGHT
-
-// Re-centring on a wall (turn.c, Turn_CentreOnWall): before any pivot at a
-// front wall, and half-way through a 180 when the robot faces a side wall of
-// the dead end. Creep until the front sonar reads CORRIDOR_HALF_CM -
-// SONAR_TO_AXLE_CM, i.e. the axle is in the middle of the cell. Each step is a
-// KICK_MS breakaway kick then cruise PWM, sized at UTURN_CENTRE_SPEED_CMS (an
-// average from rest, only used to size the step -- the next measurement
-// corrects it).
-#define UTURN_CENTRE_FRONT_CM  (CORRIDOR_HALF_CM - SONAR_TO_AXLE_CM)   // 5 cm
-#define UTURN_CENTRE_TOL_CM    1
-#define UTURN_CENTRE_MAX_CM    20      // further than this: not facing a wall
-#define UTURN_CENTRE_PWM       DRIVE_BASE_PWM
-#define UTURN_CENTRE_SPEED_CMS 20
-#define UTURN_CENTRE_MAX_MS    300
-#define UTURN_CENTRE_TRIES     3
-#define UTURN_PING_GAP_MS      30      // between the three front pings
 
 // ---------------------------------------------------------------------------
 //  13. GYRO CALIBRATION
@@ -753,18 +613,6 @@
 // turn in both runs inherits this number, and a turn that lands well off 90
 // puts run 2 in a corridor the stored route does not describe.
 #define GYRO_LSB_MS_PER_DEGREE 65500L
-
-// Heading_AddNow() integrates over the real time since the previous sample,
-// but never more than this: a longer gap means nothing was sampling (a
-// calibration, the robot waiting armed) and the chassis was still.
-#define HEADING_MAX_DT_MS      60
-
-// Gyro scale learned during the run (heading.c, Heading_GridStep): once the
-// grid has turned this far net, the wall corrections it needed give the scale
-// error, and half of it is applied. Capped: a scale this far off means the
-// GYRO_LSB_MS_PER_DEGREE calibration itself needs redoing, not trimming.
-#define HEADING_SCALE_WINDOW_DEG 180
-#define HEADING_SCALE_MAX_PPT    50     // parts per thousand: +/-5%
 
 // ---------------------------------------------------------------------------
 //  14. RUN SAFETY

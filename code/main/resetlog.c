@@ -45,11 +45,6 @@ void ResetLog_Report(void) {
     Debug_KVF("  raw", f);
     Debug_KVF("boot#", (int32_t)s_boot_count);
     Debug_NL();
-    // The debug TX ring is 192 bytes and DROPS on overflow. This report is
-    // several times that on a warm reset, so it is flushed in pieces -- the
-    // unflushed version arrived as "fi rpc tRr4un" in usart_20260924_second.
-    // Nothing is moving yet, so blocking here costs nothing.
-    Debug_Flush();
 
     if (s_boot_count == 1) {
         Debug_P("  cold start (SRAM was empty) -- baseline, nothing to read"
@@ -60,12 +55,10 @@ void ResetLog_Report(void) {
         Debug_P(" ***\r\n");
         Debug_P("  SRAM SURVIVED, so VCC did NOT collapse. This was the\r\n");
         Debug_P("  brown-out detector or the RESET pin, not a broken wire.\r\n");
-        Debug_Flush();
         if (f & (1 << EXTRF)) {
             Debug_P("  EXTERNAL flag -> the RESET PIN was pulled low. On a\r\n");
             Debug_P("  bare build that usually means no 10k pull-up + 100nF on\r\n");
             Debug_P("  pin 9, or a dangling ISP cable picking up noise.\r\n");
-            Debug_Flush();
         } else if (f & (1 << BORF)) {
             Debug_P("  BROWNOUT flag -> the rail dipped below the BOD\r\n");
             Debug_P("  threshold. Decoupling and bulk capacitance.\r\n");
@@ -73,15 +66,12 @@ void ResetLog_Report(void) {
         Debug_KVF("  previous boot's flags", (int32_t)s_prev_flags);
         Debug_NL();
         Debug_NL();
-        Debug_Flush();
     } else {
         Debug_P("  *** SRAM WAS WIPED -> VCC actually fell to near zero ***\r\n");
         Debug_P("  That is an INTERMITTENT POWER CONNECTION, not a dip:\r\n");
-        Debug_Flush();
         Debug_P("  battery holder contacts, a VCC/GND jumper, or the buck\r\n");
         Debug_P("  converter dropping out. Note the boot# restarting at 1\r\n");
         Debug_P("  every time is itself the evidence.\r\n");
-        Debug_Flush();
     }
     // ---- what the rail was doing when the MCU died -----------------------
     // This is the measurement that separates the two candidate faults, and they
@@ -111,20 +101,16 @@ void ResetLog_Report(void) {
         if (mn < POWER_MIN_SAFE_MV) {
             Debug_P("  -> The rail was ALREADY SAGGING before it died, so this"
                     " is a\r\n");
-            Debug_Flush();
             Debug_P("     current-delivery problem: capacitance, wire"
                     " resistance,\r\n");
             Debug_P("     connector resistance, shared ground return.\r\n");
-            Debug_Flush();
         } else {
             Debug_P("  -> The rail was STILL HEALTHY at the last sample, then"
                     " gone.\r\n");
-            Debug_Flush();
             Debug_P("     That is an ABRUPT COLLAPSE, not a sag: a regulator"
                     " shutting\r\n");
             Debug_P("     off (over-current hiccup / thermal / two regulators"
                     "\r\n");
-            Debug_Flush();
             Debug_P("     fighting) or a connection momentarily opening. Adding"
                     "\r\n");
             Debug_P("     capacitors will NOT fix this one.\r\n");

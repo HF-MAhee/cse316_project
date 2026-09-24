@@ -61,15 +61,6 @@ int main(void) {
     // line of its own.
     Debug_KVF("VCC idle mV", (int32_t)Power_VccMv());
     Debug_P(" (bandgap-derived: trust the CHANGE, not the absolute)\r\n");
-    if (Power_VccMv() < POWER_MIN_SAFE_MV) {
-        // Already low with nothing running: every motor kick starts from here,
-        // and the brown-out detector trips a few hundred mV lower.
-        Debug_Flush();
-        Debug_P("*** VCC LOW AT IDLE: the MCU supply is below 4.5 V before any motor\r\n");
-        Debug_P("    runs. Expect brown-out resets on the first kick. Check the MCU\r\n");
-        Debug_P("    supply voltage at pins 10/11 with a meter.\r\n");
-        Debug_Flush();
-    }
     Debug_Flush();
 
     MPU6050_Init();
@@ -118,7 +109,7 @@ int main(void) {
         // ---- sensors -----------------------------------------------------
         MPU6050_ReadAll(&g);
         Motion_Update(&g);                     // pitch/roll -> rocking flag
-        Heading_AddNow(g.z);
+        Heading_Add(g.z, CONTROL_TICK_MS);
 
         Sonar_Task();                          // exactly one ping per tick
 
