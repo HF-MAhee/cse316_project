@@ -1,6 +1,10 @@
 *.elf
 *.hex
 *.o
+# Header-dependency files from the Makefile's -MMD -MP. They arrived with
+# the per-mode build split and were never added here, so every build left
+# a drift of untracked files behind.
+*.d
 *.aux
 *.fls
 *.nav
