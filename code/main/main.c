@@ -73,6 +73,24 @@ int main(void) {
     Debug_P(" (bandgap-derived: trust the CHANGE, not the absolute)\r\n");
     Debug_Flush();
 
+    // Before MPU6050_Init() AND before the unsafe-restart gate below, both on
+    // purpose.
+    //
+    // Before MPU6050_Init() because a mode that diagnoses a dead I2C bus has to
+    // run before anything that would hang on it.
+    //
+    // Before the gate because every mode that uses this hook is a DIAGNOSTIC
+    // that never drives -- MODE=gyrodiag and MODE=panel both take over here and
+    // never return. The gate exists to stop the chassis driving from an unknown
+    // pose, which is not something a bench test of the LED and button can do;
+    // blocking them would mean a brown-out during a previous run makes the
+    // button test look broken, when the button is fine. Motors_Stop() has
+    // already run, so nothing can move either way.
+    //
+    // Every driving mode leaves this empty, returns immediately, and still
+    // meets the gate below untouched.
+    Mode_PreGyro();
+
 #if HALT_ON_UNSAFE_RESTART
     if (ResetLog_UnsafeRestart()) {
         // Refuse to drive. See HALT_ON_UNSAFE_RESTART in config.h -- carrying
@@ -100,10 +118,6 @@ int main(void) {
     }
 #endif
 
-    // Before MPU6050_Init() on purpose: a mode that diagnoses a dead I2C bus
-    // has to run before anything that would hang on it. Every other mode
-    // leaves this empty.
-    Mode_PreGyro();
 
     MPU6050_Init();
     Debug_P("calibrating gyro, hold still...\r\n");

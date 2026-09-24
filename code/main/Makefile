@@ -84,6 +84,7 @@ list-modes:
 	@echo "  gyrodiag    gyro / I2C connection diagnostic, runs on a cold bus"
 	@echo "  openavoid   open-space obstacle avoidance, no corridor"
 	@echo "  deadend     dead-end 180, direction chosen from the nearer wall"
+	@echo "  panel       LED + button test: press to blink, press again to stop"
 	@echo "  wallmem     wall follower WITH MEMORY: explore, then replay the"
 	@echo "              collapsed route (two separate power-ups, EEPROM)"
 
@@ -92,7 +93,7 @@ list-modes:
 # somewhere else.
 check-all:
 	@fail=0; \
-	for m in sonar corridor turn maze cone square turndbg avoid gyrodiag openavoid deadend wallmem; do \
+	for m in sonar corridor turn maze cone square turndbg avoid gyrodiag openavoid deadend wallmem panel; do \
 	  $(MAKE) --no-print-directory clean >/dev/null; \
 	  if $(MAKE) --no-print-directory MODE=$$m >/tmp/mk.$$m.log 2>&1; then \
 	    printf "  %-11s %s\n" "$$m" "$$(grep Program /tmp/mk.$$m.log | awk '{print $$2" flash, "}')$$(grep Data /tmp/mk.$$m.log | awk '{print $$2" ram"}')"; \
@@ -102,7 +103,7 @@ check-all:
 	done; \
 	$(MAKE) --no-print-directory clean >/dev/null; \
 	if [ $$fail -ne 0 ]; then echo "check-all: FAILED"; exit 1; fi; \
-	echo "check-all: all 12 modes build"
+	echo "check-all: all 13 modes build"
 
 # Host-side tests. Both compile the SAME source the firmware links against:
 # wallmem.c against a model of the demo maze (explore -> collapse -> replay),
