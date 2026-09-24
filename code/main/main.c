@@ -109,7 +109,7 @@ int main(void) {
         // ---- sensors -----------------------------------------------------
         MPU6050_ReadAll(&g);
         Motion_Update(&g);                     // pitch/roll -> rocking flag
-        Heading_Add(g.z, CONTROL_TICK_MS);
+        Heading_AddNow(g.z);
 
         Sonar_Task();                          // exactly one ping per tick
 

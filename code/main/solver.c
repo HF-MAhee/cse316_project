@@ -47,8 +47,8 @@ typedef enum {
     WM_ARMED = 0,      // stopped, LED showing which run is next, waiting for the button
     WM_STARTUP,
     WM_DRIVING,        // centring forward, watching for a junction
-    WM_APPROACH,       // junction seen; drive on so the AXLE reaches it
-    WM_CONFIRM_EXIT,   // all three open -- exit, or a 4-way seen early?
+    WM_APPROACH,       // decided; drive on so the AXLE reaches the turn point
+    WM_LOOK,           // something other than corridor seen: drive on, look, then classify
     WM_STOPPING,
     WM_RECAL,
     WM_DECIDE,         // execute the pivot
@@ -67,9 +67,49 @@ static uint8_t    s_exploring = 1;      // 0 = replaying a saved route
 static uint8_t    s_degraded  = 0;      // replay failed; finishing on left-hand
 static uint8_t    s_pending_turn = WM_TURN_F;
 
-// Debounce, same shape as the maze solver's: a single bad ping must never
-// trigger a turn, and a spurious U-turn is the expensive one.
-static uint8_t s_open_l = 0, s_open_r = 0, s_block_f = 0, s_deadend = 0;
+// ---------------------------------------------------------------------------
+//  What the sonars say, debounced.
+//
+//  Counted in FRESH PINGS, not control ticks. Each sensor is pinged every
+//  third tick, so the old per-tick counters met "2 confirmations" with one
+//  ping read twice -- a single stray echo was enough to decide a turn, and in
+//  the real log a single bad right-hand ping called a dead end in E1.
+// ---------------------------------------------------------------------------
+static uint8_t  s_open_l = 0, s_open_r = 0;     // of the last OPENING_WINDOW pings, how many open
+static uint8_t  s_mask_l = 0, s_mask_r = 0;     // those pings, 1 bit each, newest lowest
+static uint16_t s_ptime_l[OPENING_WINDOW], s_ptime_r[OPENING_WINDOW];  // when (ms, low 16)
+static uint8_t  s_shut_l = 0, s_shut_r = 0;     // ... reading a wall
+static uint8_t  s_block_f = 0;                  // consecutive front pings blocked
+static uint8_t  s_close_f = 0, s_close_seq = 0; // last 3 front pings within FRONT_STOP_CM
+static uint8_t  s_seq_l, s_seq_f, s_seq_r;      // last ping counted, per sensor
+// If nonzero, where the next opening on that side really starts (millis):
+// set when the robot is known to be at a cell edge -- leaving the turn cell,
+// or leaving a junction cell it went straight through -- and consumed by the
+// next ping. An opening already open on that ping began at the edge, not
+// where it happened to be first seen.
+static uint32_t s_hint_l = 0, s_hint_r = 0;
+static uint32_t s_open_since_l, s_open_since_r; // first ping of the current open run
+static uint32_t s_leg_edge_t = 0;               // side sonars crossed out of the turn cell
+static uint32_t s_side_guard_t = 0;             // side readings ignored until then
+
+// A side opening the robot has just driven straight past. It stays masked --
+// reported as a wall -- until the junction cell has been crossed (see
+// expire_latch). Without this the same opening re-triggered a FWD decision
+// every 40 ms for as long as it was in view: 11 records for one junction in
+// the real log.
+static uint8_t  s_latch_l = 0, s_latch_r = 0;
+static uint32_t s_latch_until_l = 0, s_latch_until_r = 0;
+
+// Evidence gathered while LOOKing. A side counts as open if it read open at
+// ANY point in the look: near the start of an opening the end of the wall
+// stub beside it still echoes from off-axis (the left sonar read ~18 cm with
+// C1 wide open in the real log), so the first readings are the least reliable.
+static uint8_t  s_acc_l = 0, s_acc_r = 0;
+static uint8_t  s_look_n_l, s_look_n_r, s_look_o_l, s_look_o_r;   // pings, open pings
+static uint32_t s_junction_t0 = 0;  // when the side sonar reached the opening
+static uint8_t  s_to_wall = 0;      // approach ends at the front wall, not on time
+static turn_dir_t s_uturn_dir = UTURN_TIE_DIR;
+
 static uint8_t s_recover_begun = 0;
 
 // Run statistics -- this is what the demo is measured with. "segments" counts
@@ -89,17 +129,110 @@ static void enter(wm_state_t st) {
 }
 static uint8_t in_state_for(uint32_t ms) { return ((millis() - s_entered) >= ms) ? 1 : 0; }
 
-static void clear_debounce(void) { s_open_l = s_open_r = s_block_f = s_deadend = 0; }
+static uint8_t inc(uint8_t c) { return (uint8_t)((c < 255u) ? (c + 1u) : c); }
+
+// Start of a leg (a run starting, or a turn finished): nothing seen so far
+// counts, and any latch belonged to the corridor the robot has just left.
+static void clear_debounce(void) {
+    s_open_l = s_open_r = s_shut_l = s_shut_r = s_block_f = 0;
+    s_mask_l = s_mask_r = 0;
+    s_latch_l = s_latch_r = 0;
+    s_hint_l = s_hint_r = s_leg_edge_t;
+    s_to_wall = 0;
+    s_seq_l = Sonar_Seq(SONAR_LEFT);
+    s_seq_f = Sonar_Seq(SONAR_FRONT);
+    s_seq_r = Sonar_Seq(SONAR_RIGHT);
+    s_close_f = 0;
+    s_close_seq = s_seq_f;
+}
+
+// One side sonar, one fresh ping. A side counts as open when OPENING_VOTES of
+// its last OPENING_WINDOW pings read open -- a vote, not an unbroken run.
+// HC-SR04 dropouts read "open" and come in bursts, so a run of 2 or 3 is not
+// evidence; but one dropout's opposite -- a lone echo off a wall end in the
+// middle of a real opening -- must not reset the count either, or an opening
+// with a wall end at each side can go unconfirmed all the way across.
+static uint8_t popcount_window(uint8_t m) {
+    uint8_t k, n = 0;
+    for (k = 0; k < OPENING_WINDOW; k++) if (m & (1u << k)) n++;
+    return n;
+}
+
+static void side_ping(uint8_t open, uint8_t *mask, uint16_t *ptime, uint8_t *n_open,
+                      uint8_t *n_shut, uint32_t *hint, uint32_t *since) {
+    uint8_t m = *mask, k;
+    if (open && m == 0) *since = *hint ? *hint : (millis() - OPENING_DETECT_LAG_MS);
+    m = (uint8_t)(((m << 1) | (open ? 1u : 0u)) & ((1u << OPENING_WINDOW) - 1u));
+    for (k = OPENING_WINDOW - 1; k > 0; k--) ptime[k] = ptime[k - 1];
+    ptime[0] = (uint16_t)millis();
+    *mask = m;
+    *n_open = popcount_window(m);
+    *n_shut = open ? 0 : inc(*n_shut);
+    *hint = 0;
+}
+
+// Going straight through a junction masks its openings (s_latch_*) until the
+// junction cell has been crossed: CORRIDOR_WIDTH_CM after the opening began.
+// Not "until a wall is seen": in the demo maze D0 and C0 sit side by side,
+// separated only by the END of the C0|D0 stub, so there is no wall between
+// them to see -- C0 stayed masked and C1 was logged as FORCED_RIGHT.
+//
+// On expiry, the pings already taken past the cell edge still count toward
+// the next cell's opening; only the ones from before it are dropped. On a
+// robot a little faster than TRAVEL_SPEED_CMS the latch expires well into
+// the next cell, and starting its count from zero there left too few pings
+// to confirm the opening before the junction was classified.
+static void expire_latch(uint8_t *latch, uint32_t until, uint8_t *mask, uint16_t *ptime,
+                         uint8_t *n_open, uint32_t *hint) {
+    if (*latch && (int32_t)(millis() - until) >= 0) {
+        uint16_t edge = (uint16_t)(until - FWD_PASS_MARGIN_MS);   // the next cell starts here
+        uint8_t  k;
+        *latch = 0;
+        for (k = 0; k < OPENING_WINDOW; k++)
+            if ((int16_t)(ptime[k] - edge) < 0) *mask &= (uint8_t)~(1u << k);
+        *n_open = popcount_window(*mask);
+        if (*mask == 0) *hint = until - FWD_PASS_MARGIN_MS;
+        else            *hint = 0;
+    }
+}
 
 static void update_debounce(void) {
-    if (Sonar_IsOpen(SONAR_LEFT))  { if (s_open_l  < 255) s_open_l++;  } else s_open_l  = 0;
-    if (Sonar_IsOpen(SONAR_RIGHT)) { if (s_open_r  < 255) s_open_r++;  } else s_open_r  = 0;
-    if (Sonar_FrontBlocked())      { if (s_block_f < 255) s_block_f++; } else s_block_f = 0;
+    // Nothing counts until every sonar has been pinged since the last flush.
+    // Until then a sensor's reading is the NO_ECHO placeholder, which reads
+    // as OPEN -- that is what produced a junction on the very first tick
+    // after GO in both real logs (a LEFT that did not exist in one of them).
+    if (!Sonar_HasSample(SONAR_LEFT) || !Sonar_HasSample(SONAR_FRONT) ||
+        !Sonar_HasSample(SONAR_RIGHT)) return;
 
-    if (Sonar_FrontBlocked() && !Sonar_IsOpen(SONAR_LEFT) && !Sonar_IsOpen(SONAR_RIGHT)) {
-        if (s_deadend < 255) s_deadend++;
-    } else {
-        s_deadend = 0;
+    // Straight after a turn the side sonars are still inside the turn cell,
+    // looking down whatever branches it has -- including the corridor the
+    // robot has just come out of. None of that is the next junction. Ignore
+    // the sides until they are out of the cell and past the echo off the end
+    // of its walls; the first ping after that dates any opening back to the
+    // cell edge (see side_ping).
+    if ((int32_t)(millis() - s_side_guard_t) < 0) {
+        s_seq_l = Sonar_Seq(SONAR_LEFT);
+        s_seq_r = Sonar_Seq(SONAR_RIGHT);
+    }
+    expire_latch(&s_latch_l, s_latch_until_l, &s_mask_l, s_ptime_l, &s_open_l, &s_hint_l);
+    expire_latch(&s_latch_r, s_latch_until_r, &s_mask_r, s_ptime_r, &s_open_r, &s_hint_r);
+    if (Sonar_Seq(SONAR_LEFT) != s_seq_l) {
+        s_seq_l = Sonar_Seq(SONAR_LEFT);
+        s_look_n_l = inc(s_look_n_l);
+        if (Sonar_IsOpen(SONAR_LEFT)) s_look_o_l = inc(s_look_o_l);
+        side_ping(Sonar_IsOpen(SONAR_LEFT), &s_mask_l, s_ptime_l, &s_open_l, &s_shut_l,
+                  &s_hint_l, &s_open_since_l);
+    }
+    if (Sonar_Seq(SONAR_RIGHT) != s_seq_r) {
+        s_seq_r = Sonar_Seq(SONAR_RIGHT);
+        s_look_n_r = inc(s_look_n_r);
+        if (Sonar_IsOpen(SONAR_RIGHT)) s_look_o_r = inc(s_look_o_r);
+        side_ping(Sonar_IsOpen(SONAR_RIGHT), &s_mask_r, s_ptime_r, &s_open_r, &s_shut_r,
+                  &s_hint_r, &s_open_since_r);
+    }
+    if (Sonar_Seq(SONAR_FRONT) != s_seq_f) {
+        s_seq_f = Sonar_Seq(SONAR_FRONT);
+        s_block_f = Sonar_FrontBlocked() ? inc(s_block_f) : 0;
     }
 }
 
@@ -108,15 +241,35 @@ static void update_debounce(void) {
 // openness, not obstruction, so that the signature is directly comparable with
 // what the classifier saw in the other run.
 static void read_openness(uint8_t *f, uint8_t *l, uint8_t *r) {
-    *l = (uint8_t)((s_open_l  >= OPENING_CONFIRM) ? 1u : 0u);
-    *r = (uint8_t)((s_open_r  >= OPENING_CONFIRM) ? 1u : 0u);
+    *l = (uint8_t)((s_open_l >= OPENING_VOTES && !s_latch_l) ? 1u : 0u);
+    *r = (uint8_t)((s_open_r >= OPENING_VOTES && !s_latch_r) ? 1u : 0u);
     *f = (uint8_t)((s_block_f >= OPENING_CONFIRM) ? 0u : 1u);
 }
 
-// Rotate AWAY from the nearer wall. The front corners sweep
-// PIVOT_FRONT_RADIUS_CM into the side being turned towards while the rear
-// corners only reach ~10.6 cm the other way, so the turning side needs about
-// 6 cm more room. See turn.h.
+// Close enough to the wall ahead to stop and turn: 2 of the last 3 front
+// pings under FRONT_STOP_CM. Not one ping -- a single garbage echo (crosstalk,
+// a reflection) stopped the robot dead in open space, just outside the exit,
+// where it then "turned" at a wall that was not there. And not two in a row
+// either -- close to a wall a sonar can lose every other echo, and in
+// simulation "two in a row" then never happened and the robot drove into it.
+// FRONT_STOP_CM allows for the extra ping of travel.
+static uint8_t front_close(void) {
+    if (Sonar_Seq(SONAR_FRONT) != s_close_seq) {
+        uint8_t near = (Sonar_IsValid(SONAR_FRONT) && Sonar_Latest(SONAR_FRONT) < FRONT_STOP_CM)
+                       ? 1u : 0u;
+        s_close_seq = Sonar_Seq(SONAR_FRONT);
+        s_close_f = (uint8_t)(((s_close_f << 1) | near) & 0x07u);   // last 3 pings
+    }
+    return ((s_close_f & 1u) + ((s_close_f >> 1) & 1u) + ((s_close_f >> 2) & 1u) >= 2) ? 1u : 0u;
+}
+// Rotate AWAY from the nearer wall. The front corners sweep ~17 cm into the
+// side being turned towards while the rear corners only reach ~10.6 cm the
+// other way, so the turning side needs about 6 cm more room.
+//
+// "Nearer" is judged at the AXLE, which is what the robot pivots about. The
+// side sonars sit SIDE_SONAR_TO_AXLE_CM ahead of it, so a robot skewed a few
+// degrees reads centred at the sonars while its axle is well off to one side
+// -- and in a 40 cm dead end that decides whether a corner touches the wall.
 static turn_dir_t pick_180_dir(void) {
     uint16_t l_cm = Sonar_Median(SONAR_LEFT);
     uint16_t r_cm = Sonar_Median(SONAR_RIGHT);
@@ -124,8 +277,12 @@ static turn_dir_t pick_180_dir(void) {
     uint8_t  r_ok = Sonar_IsValid(SONAR_RIGHT);
 
     if (l_ok && r_ok) {
-        if (l_cm > r_cm && (uint16_t)(l_cm - r_cm) >= UTURN_DECIDE_MARGIN_CM) return TURN_LEFT;
-        if (r_cm > l_cm && (uint16_t)(r_cm - l_cm) >= UTURN_DECIDE_MARGIN_CM) return TURN_RIGHT;
+        // Axle offset to the LEFT of centre, mm: the sonars' offset, less the
+        // part that is only the skew swinging them sideways.
+        int32_t off_mm = ((int32_t)r_cm - (int32_t)l_cm) * 5L;
+        off_mm -= ((int32_t)Heading_GridErrorTenths() * SIDE_SONAR_TO_AXLE_CM * 10L) / 573L;
+        if (off_mm <= -(int32_t)UTURN_DECIDE_MARGIN_CM * 5L) return TURN_LEFT;   // nearer the right
+        if (off_mm >=  (int32_t)UTURN_DECIDE_MARGIN_CM * 5L) return TURN_RIGHT;  // nearer the left
     } else if (l_ok) {
         return TURN_RIGHT;      // only the left wall is visible -- turn away
     } else if (r_ok) {
@@ -232,8 +389,43 @@ static void report_run(void) {
     Debug_KVF("turn180", (int32_t)s_turns180);
     Debug_KVF("ms", (int32_t)(millis() - s_run_started));
     Debug_KVF("degraded", (int32_t)s_degraded);
+    // The gyro scale trim learned from the walls. Anything past ~+/-15
+    // (1.5%) run after run: recalibrate GYRO_LSB_MS_PER_DEGREE instead.
+    Debug_KVF("gyro_trim_ppt10", (int32_t)Heading_ScaleCorrection());
     Debug_NL();
     Debug_Flush();
+}
+
+// Classify, decide, log. Returns 1 if the robot must stop and turn, 0 if it
+// carries straight on (or the reading turned out to be a plain corridor).
+static uint8_t commit(uint8_t f, uint8_t l, uint8_t r) {
+    if (!WallMem_IsDecision(f, l, r)) {
+        // It was a flicker -- the look found a plain corridor. Said on the
+        // wire, because a real junction ending up here is a missed record.
+        Debug_P("look: corridor after all\r\n");
+        enter(WM_DRIVING);
+        return 0;
+    }
+    s_pending_turn = decide_turn(f, l, r);
+    if (s_state == WM_FAULT) return 0;          // decide_turn halted us
+
+    Debug_P("junction ");
+    Debug_StrP(WallMem_TypeName(f, l, r));
+    Debug_P(" -> ");
+    Debug_StrP(WallMem_TurnName(s_pending_turn));
+    Debug_P("\r\n");
+
+    if (s_pending_turn == WM_TURN_F) {
+        // Straight on. Mask the openings being passed until the junction
+        // cell has been crossed, so this junction is logged exactly once.
+        s_latch_l = l;
+        s_latch_r = r;
+        s_latch_until_l = s_open_since_l + FWD_PASS_MS;
+        s_latch_until_r = s_open_since_r + FWD_PASS_MS;
+        enter(WM_DRIVING);
+        return 0;
+    }
+    return 1;
 }
 
 // ===========================================================================
@@ -337,7 +529,12 @@ void Solver_Tick(const tick_ctx_t *t) {
             // filters are full of readings taken while it was in mid-air.
             if (!Gyro_CalibrateQuick()) Debug_P("recal SKIPPED -- not still\r\n");
             Heading_Reset();
+            // The robot was placed square in the start cell: that direction
+            // IS the maze grid, for the rest of the run.
+            Heading_GridReset();
             Sonar_Flush();
+            s_leg_edge_t   = 0;          // the start cell: no edge to date from
+            s_side_guard_t = millis();
             clear_debounce();
             Debug_P("GO\r\n");
             Drive_Begin();
@@ -362,96 +559,88 @@ void Solver_Tick(const tick_ctx_t *t) {
         // standing in. A desynchronised log replays into a wall.
         if ((millis() - s_leg_started) > MAX_LEG_MS) {
             Debug_P("leg timeout -- treating as a dead end\r\n");
-            f = 0; l = 0; r = 0;
-        } else if (s_deadend >= DEADEND_CONFIRM) {
-            // A confirmed dead end is a decision point like any other: the
-            // left-hand rule answers U, and the replay answers whatever was
-            // stored -- which after collapsing is never U, so run 2 never
-            // enters a dead end at all.
-            f = 0; l = 0; r = 0;
-        } else if (f && l && r) {
-            // Everything open. That is the exit -- or a T junction whose front
-            // wall has not closed in yet, which looks identical from here.
-            Debug_P("all-open, confirming\r\n");
-            enter(WM_CONFIRM_EXIT);
-            break;
-        } else if (!WallMem_IsDecision(f, l, r)) {
-            break;      // plain corridor: drive on, record nothing, consume nothing
-        }
-
-        s_pending_turn = decide_turn(f, l, r);
-        if (s_state == WM_FAULT) break;          // decide_turn halted us
-
-        Debug_P("junction ");
-        Debug_StrP(WallMem_TypeName(f, l, r));
-        Debug_P(" -> ");
-        Debug_StrP(WallMem_TurnName(s_pending_turn));
-        Debug_P("\r\n");
-
-        if (s_pending_turn == WM_TURN_F) {
-            // Straight on. Suppress re-triggering on this same opening until
-            // it has passed out of view, exactly as the maze solver does.
-            s_open_l = s_open_r = 0;
-            break;
-        }
-        if (s_pending_turn == WM_TURN_U) {
+            s_pending_turn = decide_turn(0, 0, 0);
+            if (s_state == WM_FAULT) break;
             Drive_Stop();
             enter(WM_STOPPING);
             break;
         }
-        // The sonar sits ahead of the axle, so keep driving until the AXLE --
-        // not the nose -- is level with the opening.
-        enter(WM_APPROACH);
+        if (!WallMem_IsDecision(f, l, r)) break;   // plain corridor: drive on
+
+        // Something other than a corridor. Do NOT classify it yet: at this
+        // moment the side sonar has only just reached the opening and the
+        // front sonar is still a corridor-width short of whatever wall ends
+        // this cell. Both of the real logs' misreads came from deciding here:
+        //   - the E1 corner logged as FWD_OR_LEFT (front wall still 33 cm off)
+        //   - the D1 T junction read as FWD_OR_RIGHT, because the left sonar
+        //     was still getting an echo off the end of the C0|D0 stub.
+        // So drive on and look first. Timing is taken from when the opening
+        // was first seen, so the extra look costs no positioning accuracy.
+        s_acc_l = l;
+        s_acc_r = r;
+        s_look_n_l = s_look_n_r = s_look_o_l = s_look_o_r = 0;
+        s_junction_t0 = millis();
+        if (l && (int32_t)(s_open_since_l - s_junction_t0) < 0) s_junction_t0 = s_open_since_l;
+        if (r && (int32_t)(s_open_since_r - s_junction_t0) < 0) s_junction_t0 = s_open_since_r;
+        enter(WM_LOOK);
+        break;
+
+    case WM_LOOK:
+        // Drive on JUNCTION_LOOK_CM and gather evidence, then classify once.
+        // A side counts as open if it read open at any point; the front is
+        // judged at the end, when a T or corner's wall has had time to come
+        // within FRONT_BLOCKED_CM. All three still open after the look is
+        // either the exit or a T whose front wall has not closed in yet, and
+        // that is settled by driving on to EXIT_CONFIRM_CM -- a T's wall
+        // always turns up inside EXIT_FALSE_WINDOW_CM, the exit's never does.
+        Drive_Tick(rate);
+        update_debounce();
+        read_openness(&f, &l, &r);
+        s_acc_l |= l;
+        s_acc_r |= r;
+
+        if (front_close()) {
+            // Reached the wall ahead: this is the turning point.
+            Drive_Stop();
+            s_to_wall = 1;
+            if (commit(0, s_acc_l, s_acc_r)) enter(WM_STOPPING);
+            break;
+        }
+        if (!in_state_for(JUNCTION_LOOK_MS)) break;
+        if (f && s_acc_l && s_acc_r) {
+            if (!in_state_for(EXIT_CONFIRM_MS)) break;
+            // The exit is final, so it is judged on what the sonars say NOW,
+            // not on everything they ever said during the look -- a burst of
+            // lost echoes on one side must not end the run.
+            if (l && r) {
+                Drive_Stop();
+                enter(WM_DONE);
+                break;
+            }
+            // Not the exit: one side's "open" was a burst of dropouts. Keep a
+            // side that read open for most of the look -- judging on this
+            // instant alone dropped a real opening the robot had already
+            // driven past.
+            s_to_wall = 0;
+            if (commit(f, (uint8_t)(s_look_o_l * 2u >= s_look_n_l && s_look_n_l),
+                          (uint8_t)(s_look_o_r * 2u >= s_look_n_r && s_look_n_r)))
+                enter(WM_APPROACH);
+            break;
+        }
+        s_to_wall = (uint8_t)(!f);
+        if (commit(f, s_acc_l, s_acc_r)) enter(WM_APPROACH);
         break;
 
     case WM_APPROACH:
+        // Drive on until the AXLE is where the pivot belongs: the middle of
+        // the opening (on time, from when the side sonar reached it), or the
+        // middle of the cell (at the front wall).
         Drive_Tick(rate);
-        if (Sonar_IsValid(SONAR_FRONT) && Sonar_Latest(SONAR_FRONT) < FRONT_STOP_CM) {
-            Debug_P("front wall close, stopping short\r\n");
+        if (front_close() ||
+            (s_to_wall ? in_state_for(APPROACH_WALL_TIMEOUT_MS)
+                       : ((millis() - s_junction_t0) >= APPROACH_TIME_MS))) {
             Drive_Stop();
             enter(WM_STOPPING);
-            break;
-        }
-        if (in_state_for(APPROACH_TIME_MS)) {
-            Drive_Stop();
-            enter(WM_STOPPING);
-        }
-        break;
-
-    case WM_CONFIRM_EXIT:
-        // The distinction between "the exit" and "a junction whose front wall
-        // has not closed in yet" is made HERE, and it is made by driving: keep
-        // going, and see whether a wall turns up. A junction produces one
-        // within EXIT_FALSE_WINDOW_CM; the exit never does.
-        //
-        // Bailing on the RAW front reading rather than the debounced one is
-        // deliberate. It returns to WM_DRIVING at the same front distance at
-        // which the junction would have been classified anyway, so the detour
-        // costs one control tick and no extra travel -- the approach timing
-        // downstream is unaffected.
-        Drive_Tick(rate);
-        update_debounce();
-        if (Sonar_FrontBlocked()) {
-            // How far into the window the wall appeared. This is the margin
-            // nobody can compute from a datasheet: if it ever creeps close to
-            // EXIT_CONFIRM_CM on real cardboard, raise EXIT_CONFIRM_MARGIN_CM
-            // before it costs a run.
-            Debug_P("not the exit -- front wall at ");
-            Debug_Int((int32_t)(((millis() - s_entered) * TRAVEL_SPEED_CMS) / 1000UL));
-            Debug_P(" cm of ");
-            Debug_Int((int32_t)EXIT_CONFIRM_CM);
-            Debug_P(" cm\r\n");
-            enter(WM_DRIVING);
-            break;
-        }
-        if (in_state_for(EXIT_CONFIRM_MS)) {
-            read_openness(&f, &l, &r);
-            if (f && l && r) {
-                Drive_Stop();
-                enter(WM_DONE);
-            } else {
-                enter(WM_DRIVING);
-            }
         }
         break;
 
@@ -461,6 +650,19 @@ void Solver_Tick(const tick_ctx_t *t) {
         break;
 
     case WM_RECAL:
+        // Choose the U-turn direction NOW, from the sonar readings taken while
+        // stopped. This used to happen after the flush below, when every
+        // sensor was invalid, so it always fell through to UTURN_TIE_DIR.
+        if (s_pending_turn == WM_TURN_U) {
+            s_uturn_dir = pick_180_dir();
+            // Which way, and why: the pivot sweeps ~17 cm and a dead end only
+            // has ~20 cm each side of centre, so this choice is what keeps
+            // the front corners off the nearer wall.
+            Debug_KVF("uturn L", (int32_t)Sonar_Median(SONAR_LEFT));
+            Debug_KVF("R", (int32_t)Sonar_Median(SONAR_RIGHT));
+            if (s_uturn_dir == TURN_LEFT) Debug_P("-> left\r\n");
+            else                          Debug_P("-> right\r\n");
+        }
         // Refresh the gyro bias while genuinely stationary; thermal drift over
         // a long explore run otherwise creeps into every later turn.
         if (!Gyro_CalibrateQuick()) Debug_P("recal SKIPPED\r\n");
@@ -471,14 +673,20 @@ void Solver_Tick(const tick_ctx_t *t) {
 
     case WM_DECIDE: {
         turn_result_t res;
+        // Stopped at a front wall: put the pivot point in the middle of the
+        // cell before turning. A robot that rolled 3 cm further than usual
+        // would otherwise sweep its front corners into the wall ahead.
+        if (s_to_wall) Turn_CentreOnWall();
         if (s_pending_turn == WM_TURN_U) {
-            Turn_180(pick_180_dir(), &res);
+            Turn_180(s_uturn_dir, &res);
             s_turns180++;
         } else {
             Turn_90((s_pending_turn == WM_TURN_L) ? TURN_LEFT : TURN_RIGHT, &res);
             s_turns90++;
         }
         Debug_KVF("ang10", res.achieved_tenths);
+        Debug_KVF("grid10", res.grid_error_tenths);
+        Debug_KVF("nudges", res.nudges_used);
         Debug_KVF("conv", res.converged);
         // A wrong-way pivot is the expensive failure here: the robot is now
         // facing somewhere the stored route knows nothing about, and run 2's
@@ -490,7 +698,16 @@ void Solver_Tick(const tick_ctx_t *t) {
     }
 
     case WM_RECOVER:
-        if (!s_recover_begun) { Drive_Begin(); s_recover_begun = 1; }
+        // Drive out of the turn cell on the gyro alone while the sonar filters
+        // refill. The pivot happened with the axle at the cell centre, so the
+        // side sonars leave the cell SIDE_EDGE_MS in -- note when, in case they
+        // leave it straight into an opening, and ignore them until then.
+        if (!s_recover_begun) {
+            Drive_Begin();
+            s_recover_begun = 1;
+            s_leg_edge_t   = millis() + SIDE_EDGE_MS;
+            s_side_guard_t = s_leg_edge_t + OPENING_DETECT_LAG_MS;
+        }
         Drive_Tick(rate);
         if (in_state_for(RECOVER_MS)) {
             clear_debounce();

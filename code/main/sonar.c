@@ -19,9 +19,16 @@ typedef struct {
     uint8_t  too_close;   // wall present but closer than the sensor can measure
     uint32_t stamp;
     uint8_t  confident;   // 0 if taken during a rocking window
+    uint8_t  seq;         // +1 per ping, so callers can count fresh samples
+    uint8_t  latch_n;     // consecutive lost echoes read as "too close"
+    uint8_t  near_n;      // consecutive real readings within SONAR_NEAR_LATCH_CM
+    uint16_t latest_mm;   // same ping, full resolution; 0 if not a distance
+    uint16_t ref;         // last reading that passed the jump gate
+    uint16_t cand;        // a jump waiting for a second reading to agree
 } sonar_t;
 
 static sonar_t s[SONAR_COUNT];
+static uint16_t s_ping_mm = 0;   // mm result of the most recent ping()
 static uint8_t s_turn = 0;
 
 // Rolling record of the last FRONT_VOTE_WINDOW front pings. Used instead of
@@ -71,6 +78,11 @@ void Sonar_Init(void) {
         s[i].too_close = 0;
         s[i].stamp  = 0;
         s[i].confident = 0;
+        s[i].latch_n = 0;
+        s[i].near_n = 0;
+        s[i].latest_mm = 0;
+        s[i].ref  = SONAR_NO_ECHO;
+        s[i].cand = SONAR_NO_ECHO;
         for (k = 0; k < HIST; k++) s[i].hist[k] = SONAR_NO_ECHO;
     }
     for (i = 0; i < FRONT_VOTE_WINDOW; i++) s_front_dist[i] = SONAR_NO_ECHO;
@@ -101,6 +113,10 @@ static uint16_t ping(sonar_t *p) {
 
     {   // round trip at ~343 m/s -> cm = us / 58
         uint16_t cm = (uint16_t)(dur / 58UL);
+        // The echo time resolves ~1 mm; keep it. A wall's distance changes by
+        // well under a centimetre over a short stretch, and the wall-alignment
+        // estimate in drive.c is blind at whole-centimetre resolution.
+        s_ping_mm = (uint16_t)((dur * 10UL) / 58UL);
         // A sub-minimum reading is a wall ABOUT TO BE HIT, not empty space.
         // Returning NO_ECHO here (as this originally did) made the two
         // indistinguishable, so Sonar_IsOpen() reported "open" at the moment
@@ -120,7 +136,9 @@ static uint16_t median3(uint16_t a, uint16_t b, uint16_t c) {
 
 void Sonar_Task(void) {
     sonar_t *p = &s[s_turn];
-    uint16_t v = ping(p);
+    uint16_t v;
+    s_ping_mm = 0;
+    v = ping(p);
     uint8_t  implausible_jump = 0;
 
     // --- Disambiguate a lost echo -----------------------------------------
@@ -128,8 +146,33 @@ void Sonar_Task(void) {
     // so a very near wall often produces a plain timeout that looks exactly
     // like open space. History resolves it: if the last good reading was
     // close, the wall did not vanish in 60 ms -- it got nearer.
-    if (v == SONAR_NO_ECHO && p->has_good && p->last_good <= SONAR_NEAR_LATCH_CM) {
-        v = SONAR_TOO_CLOSE;
+    //
+    // But only for a few pings. The inference is "it was near a moment ago",
+    // and it used to feed itself: the substituted reading was stored as the
+    // new last_good (SONAR_MIN_VALID_CM), so the next lost echo latched again,
+    // forever. A side sonar that last saw the END of a wall at 10 cm and then
+    // looked out into a wide opening reported a wall at 3 cm for as long as
+    // the opening lasted -- the junction was missed, and the collision
+    // recovery fired inside open space.
+    //
+    // And only after a real approach -- two near readings in a row. One
+    // garbage echo at 11 cm followed by open space is not a wall that got
+    // closer; latched, it stopped the robot dead just outside the exit.
+    if (v == SONAR_NO_ECHO && p->has_good && p->last_good <= SONAR_NEAR_LATCH_CM &&
+        (p->near_n >= 2 || p->latch_n > 0)) {
+        if (p->latch_n < SONAR_NEAR_LATCH_PINGS) {
+            v = SONAR_TOO_CLOSE;
+            p->latch_n++;
+        } else {
+            p->has_good = 0;    // the wall has gone: this really is no echo
+        }
+    } else if (v != SONAR_NO_ECHO) {
+        p->latch_n = 0;         // a real reading, near or far
+    }
+    if (v == SONAR_TOO_CLOSE || (v != SONAR_NO_ECHO && v <= SONAR_NEAR_LATCH_CM)) {
+        if (p->near_n < 255) p->near_n++;
+    } else {
+        p->near_n = 0;
     }
 
     if (v == SONAR_TOO_CLOSE) {
@@ -150,17 +193,39 @@ void Sonar_Task(void) {
     // Plausibility gate. A wall cannot appear to jump more than the robot can
     // physically travel between refreshes; a big step means the beam tilted
     // off the wall or caught the floor. Discard rather than feed the filter.
-    if (p->hist_n > 0 && v != SONAR_NO_ECHO && p->latest != SONAR_NO_ECHO) {
-        int16_t d = (int16_t)v - (int16_t)p->latest;
-        if (d < 0) d = -d;
-        if (d > SONAR_MAX_JUMP_CM) {
-            // keep the sample but flag it; two agreeing outliers will still
-            // get through, so a genuine step change is not blocked forever
-            implausible_jump = 1;
+    //
+    // Judged against the last reading that PASSED, not the last reading: one
+    // garbage echo (40 cm with the wall at 9) used to make the correct reading
+    // after it look like a jump too, so a single bad ping cost two -- and in
+    // simulation that was enough to hide a wall the robot then drove into.
+    // A genuine step (a wall end, a new wall) is accepted as soon as a second
+    // reading agrees with it.
+    if (v != SONAR_NO_ECHO) {
+        if (p->ref != SONAR_NO_ECHO) {
+            int16_t d = (int16_t)v - (int16_t)p->ref;
+            if (d < 0) d = -d;
+            if (d <= SONAR_MAX_JUMP_CM) {
+                p->ref = v;
+                p->cand = SONAR_NO_ECHO;
+            } else {
+                int16_t c = (int16_t)v - (int16_t)p->cand;
+                if (c < 0) c = -c;
+                if (p->cand != SONAR_NO_ECHO && c <= SONAR_MAX_JUMP_CM) {
+                    p->ref = v;                 // two agree: it is real
+                    p->cand = SONAR_NO_ECHO;
+                } else {
+                    implausible_jump = 1;       // keep the sample, but flag it
+                    p->cand = v;
+                }
+            }
+        } else {
+            p->ref = v;
         }
     }
 
     p->latest = v;
+    p->latest_mm = (v == SONAR_NO_ECHO || p->too_close || implausible_jump) ? 0 : s_ping_mm;
+    p->seq++;
     p->hist[p->hist_i] = v;
     p->hist_i = (uint8_t)((p->hist_i + 1) % HIST);
     if (p->hist_n < HIST) p->hist_n++;
@@ -197,13 +262,30 @@ void Sonar_Task(void) {
     s_turn = (uint8_t)((s_turn + 1) % SONAR_COUNT);
 }
 
+// One immediate ping of one sensor, outside the round-robin and without
+// touching its filters. For a caller that is stopped and wants a distance
+// now (the dead-end re-centre in turn.c). 3 cm floor, SONAR_NO_ECHO if none.
+uint16_t Sonar_PingNow(sonar_id_t id) {
+    uint16_t v = ping(&s[id]);
+    return (v == SONAR_TOO_CLOSE) ? SONAR_MIN_VALID_CM : v;
+}
+
 uint16_t Sonar_Median(sonar_id_t id) {
     sonar_t *p = &s[id];
+    uint16_t m;
     if (p->hist_n < HIST) return p->latest;
-    return median3(p->hist[0], p->hist[1], p->hist[2]);
+    m = median3(p->hist[0], p->hist[1], p->hist[2]);
+    // Two dropouts in the window make the median NO_ECHO even though the
+    // latest ping is a good distance -- and a caller that has just checked
+    // Sonar_IsValid() (which looks at the latest) then steers on "999 cm".
+    if (m == SONAR_NO_ECHO && p->latest != SONAR_NO_ECHO) return p->latest;
+    return m;
 }
 
 uint16_t Sonar_Latest(sonar_id_t id) { return s[id].latest; }
+uint8_t  Sonar_Seq(sonar_id_t id)    { return s[id].seq; }
+uint16_t Sonar_LatestMm(sonar_id_t id) { return s[id].latest_mm; }
+uint8_t  Sonar_HasSample(sonar_id_t id) { return (s[id].hist_n > 0) ? 1u : 0u; }
 
 uint8_t Sonar_IsValid(sonar_id_t id) {
     sonar_t *p = &s[id];
@@ -261,6 +343,11 @@ void Sonar_Flush(void) {
         s[i].too_close = 0;
         s[i].confident = 0;
         s[i].stamp = 0;
+        s[i].latch_n = 0;
+        s[i].near_n = 0;
+        s[i].latest_mm = 0;
+        s[i].ref  = SONAR_NO_ECHO;
+        s[i].cand = SONAR_NO_ECHO;
         for (k = 0; k < HIST; k++) s[i].hist[k] = SONAR_NO_ECHO;
     }
 }

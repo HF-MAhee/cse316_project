@@ -39,7 +39,7 @@ void    Solver_Tick(const tick_ctx_t *t);
 
 // Current state, for the first telemetry column. Values are the order of the
 // state enum in solver.c:
-//   0 ARMED    1 STARTUP   2 DRIVING    3 APPROACH  4 CONFIRM_EXIT  5 STOPPING
+//   0 ARMED    1 STARTUP   2 DRIVING    3 APPROACH  4 LOOK          5 STOPPING
 //   6 RECAL    7 DECIDE    8 RECOVER    9 DONE     10 DONE_IDLE    11 FAULT
 uint8_t Solver_State(void);
 

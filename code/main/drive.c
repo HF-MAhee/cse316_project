@@ -10,7 +10,6 @@
 
 static center_mode_t s_mode = CENTER_GYRO_ONLY;
 static int16_t       s_last_corr = 0;
-static int32_t       s_hold_heading = 0;
 static drive_debug_t s_dbg;
 
 // Wall-stuck recovery state. See WALL_STUCK_MS in config.h.
@@ -20,18 +19,48 @@ static uint16_t s_emerg_best_cm = 0; // furthest the near wall has got since
                                      // then -- progress resets the stuck timer
 static uint8_t  s_recover_phase = 0; // 0 none, 1 reversing, 2 pivoting away
 static uint32_t s_recover_until = 0; // millis() deadline for current phase
+static int32_t  s_recover_hdg0  = 0; // grid error when the pivot-away began
+
+// Wall alignment (see align_to_walls): the last few fresh pings of each side
+// wall, with the gyro heading at the moment each was taken.
+typedef struct {
+    uint16_t t[WALL_ALIGN_SAMPLES];     // ms, low 16 bits of millis()
+    int16_t  y[WALL_ALIGN_SAMPLES];     // wall distance, mm, lever-arm corrected
+    int16_t  h[WALL_ALIGN_SAMPLES];     // grid heading error, tenths of a degree
+    uint8_t  n, i, seq;
+    int16_t  pend[WALL_ALIGN_DELAY];    // estimates waiting to see the wall go on
+    uint8_t  pend_n;
+    int16_t  last;                      // latest estimate made (not yet applied)
+    uint32_t last_ms;                   // ...and when
+} wall_fit_t;
+static wall_fit_t    s_al[2];                 // 0 = left, 1 = right
+static uint32_t      s_begin_ms = 0;
 
 const drive_debug_t *Drive_Debug(void) { return &s_dbg; }
+
+// Keep the heading integrated through a blocking pulse. The brake and the
+// drive-off kick are exactly where the chassis yaws hardest (15-30 deg/s in
+// the real logs), and both used to be blind waits -- so that yaw never reached
+// the heading, and the robot set off on each leg at an angle nobody knew about.
+static void track_heading(void) {
+    gyro_xyz_t g;
+    MPU6050_ReadAll(&g);
+    Heading_AddNow(g.z);
+}
 
 void Drive_Begin(void) {
     s_last_corr = 0;
     s_mode = CENTER_GYRO_ONLY;
-    s_hold_heading = 0;
     s_emerg_side    = 0;
     s_emerg_since   = 0;
     s_emerg_best_cm = 0;
     s_recover_phase = 0;
     s_recover_until = 0;
+    s_al[0].n       = 0;
+    s_al[1].n       = 0;
+    s_al[0].pend_n  = 0;
+    s_al[1].pend_n  = 0;
+    s_begin_ms      = millis();
     Heading_Reset();
 
     // Breakaway kick: the motors will not start from rest at cruise PWM.
@@ -48,6 +77,7 @@ void Drive_Begin(void) {
             uint8_t p = (uint8_t)(MOTOR_MIN_PWM +
                 (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * el) / KICK_MS));
             Motors_Forward(p, p);
+            track_heading();
             // Sample the rail HERE, densely. The brown-out dip lasts a couple
             // of milliseconds, so the once-per-20ms tick sampler would usually
             // miss it entirely -- and this loop is exactly where the current
@@ -76,7 +106,13 @@ void Drive_Stop(void) {
     // TICK_OVERRUN_WARN_MS count per stop.
     Motors_SetLeft(DIR_REV,  DRIVE_BRAKE_PWM);
     Motors_SetRight(DIR_REV, DRIVE_BRAKE_PWM);
-    Timer_WaitMs(DRIVE_BRAKE_MS);
+    {
+        uint32_t t0 = millis();
+        while ((millis() - t0) < DRIVE_BRAKE_MS) {
+            track_heading();
+            Timer_WaitMs(TURN_TICK_MS);
+        }
+    }
 #endif
     Motors_Stop();
     Power_SetActivity(ACT_IDLE);
@@ -101,6 +137,148 @@ static int16_t clamp16(int16_t v, int16_t lo, int16_t hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+// ---------------------------------------------------------------------------
+//  Keep the maze grid honest, using the walls.
+//
+//  The grid heading is integrated gyro, so any error in the gyro's scale
+//  accumulates with every degree the robot turns -- and the left-hand rule
+//  turns a lot: run 1 of the demo maze nets up to ~1000 degrees, where a 3%
+//  sensitivity error (the MPU-6050's datasheet tolerance) would be 30.
+//
+//  A wall does not drift. Driving along one, the rate the side distance
+//  changes IS the robot's angle to the corridor: sin(angle) = lateral speed /
+//  forward speed. Over WALL_ALIGN_TICKS that gives an independent, noisy but
+//  unbiased measurement of where the grid should be, and the grid is nudged a
+//  little toward it each tick. Only while it is safe to believe: a continuous
+//  wall (no jump in the reading), no rocking, no hard yaw, not spinning up.
+// ---------------------------------------------------------------------------
+// One side. Called every tick; does something only when that sonar has a
+// fresh ping. Returns 1 with an estimate of how far the grid is off (tenths
+// of a degree, grid minus truth) once the last WALL_ALIGN_SAMPLES pings
+// describe one straight wall -- and the wall has then gone on for another
+// WALL_ALIGN_DELAY pings.
+//
+// That delay is not caution for its own sake. The last few cm of a wall
+// before an opening are its END, and the echo off a wall end grows smoothly
+// as the sonar passes it: gently enough to pass the straight-line test, and
+// it reads as the robot steering away. In simulation that alone turned the
+// grid 4 degrees on one leg. Holding each estimate until the wall is known to
+// continue throws exactly those away.
+static uint8_t wall_fit(wall_fit_t *w, sonar_id_t id, uint8_t steady, int16_t *off10) {
+    uint16_t mm = Sonar_LatestMm(id);
+    int16_t  h10, y;
+    int32_t  st = 0, sy = 0, sh = 0, stt = 0, sty = 0, res = 0;
+    int32_t  tbar, ybar, slope_num, slope_den;
+    uint8_t  k;
+
+    if (Sonar_Seq(id) == w->seq) return 0;           // nothing new
+    w->seq = Sonar_Seq(id);
+
+    // A corridor wall, read cleanly: in the band a roughly centred robot
+    // sees, and continuous with the previous ping. Anything else -- an edge
+    // echo, an opening, a far wall -- starts the fit over.
+    if (!steady || mm == 0 ||
+        mm + WALL_ALIGN_BAND_CM * 10u < SIDE_CENTRED_CM * 10u ||
+        mm > (SIDE_CENTRED_CM + WALL_ALIGN_BAND_CM) * 10u) { w->n = 0; w->pend_n = 0; return 0; }
+
+    h10 = (int16_t)Heading_GridErrorTenths();
+    // The sonar sits SIDE_SONAR_TO_AXLE_CM ahead of the axle, so yaw swings
+    // it sideways by itself: rotating LEFT by a moves the left sonar a*r
+    // closer to the left wall. Add that back, so the fit sees the axle.
+    // (r mm per tenth-degree = SIDE_SONAR_TO_AXLE_CM * 10 * pi / 1800.)
+    y = (int16_t)mm;
+    {
+        int16_t lever = (int16_t)(((int32_t)h10 * SIDE_SONAR_TO_AXLE_CM * 10L) / 573L);
+        y = (id == SONAR_LEFT) ? (int16_t)(y + lever) : (int16_t)(y - lever);
+    }
+    if (w->n > 0) {
+        int16_t prev = w->y[(uint8_t)((w->i + WALL_ALIGN_SAMPLES - 1) % WALL_ALIGN_SAMPLES)];
+        if (y - prev > WALL_ALIGN_MAX_JUMP_CM * 10 || prev - y > WALL_ALIGN_MAX_JUMP_CM * 10) {
+            w->n = 0;
+            w->pend_n = 0;
+        }
+    }
+    w->t[w->i] = (uint16_t)millis();
+    w->y[w->i] = y;
+    w->h[w->i] = h10;
+    w->i = (uint8_t)((w->i + 1) % WALL_ALIGN_SAMPLES);
+    if (w->n < WALL_ALIGN_SAMPLES) w->n++;
+    if (w->n < WALL_ALIGN_SAMPLES) return 0;
+
+    // Least-squares slope of distance against time, over every ping in the
+    // window rather than two endpoints: sub-millimetre-per-ping drift is
+    // exactly what is being measured, and each ping is noisy.
+    {
+        uint16_t t0 = w->t[w->i];                   // oldest (ring is full)
+        for (k = 0; k < WALL_ALIGN_SAMPLES; k++) {
+            int32_t tk = (int32_t)(uint16_t)(w->t[k] - t0);
+            st  += tk;          sy  += w->y[k];      sh += w->h[k];
+            stt += tk * tk;     sty += tk * w->y[k];
+        }
+        tbar = st / WALL_ALIGN_SAMPLES;
+        ybar = sy / WALL_ALIGN_SAMPLES;
+        slope_num = sty - (st * sy) / WALL_ALIGN_SAMPLES;       // mm*ms
+        slope_den = stt - (st * st) / WALL_ALIGN_SAMPLES;       // ms^2
+        if (slope_den <= 0) return 0;
+
+        // Straight? The end of a wall bends the curve; reject it.
+        for (k = 0; k < WALL_ALIGN_SAMPLES; k++) {
+            int32_t tk = (int32_t)(uint16_t)(w->t[k] - t0) - tbar;
+            int32_t fit = ybar + (slope_num * tk) / slope_den;
+            int32_t e = (int32_t)w->y[k] - fit;
+            res += e * e;
+        }
+        if (res > (int32_t)WALL_ALIGN_MAX_RMS_MM * WALL_ALIGN_MAX_RMS_MM * WALL_ALIGN_SAMPLES) {
+            w->pend_n = 0;          // a bend: whatever was pending was the start of it
+            return 0;
+        }
+    }
+    // Angle = sideways speed / forward speed. slope is mm/ms = m/s; the
+    // cruise speed in the same units is TRAVEL_SPEED_CMS / 100. Rotated
+    // LEFT, the left wall closes (negative slope) and the right one opens.
+    {
+        // Scale the denominator down rather than the numerator up: slope_num
+        // x 57300 overflows 32 bits at steep angles; slope_den / 100 costs
+        // well under 1% of precision (it is ~10^5 ms^2 over the window).
+        int32_t a10 = (slope_num * 573L) / ((slope_den / 100L) * TRAVEL_SPEED_CMS + 1L);
+        int32_t wall10 = (id == SONAR_LEFT) ? -a10 : a10;
+        int32_t off = sh / WALL_ALIGN_SAMPLES - wall10;          // grid minus truth
+        uint8_t k2;
+        if (off >  WALL_ALIGN_MAX_STEP_10) off =  WALL_ALIGN_MAX_STEP_10;
+        if (off < -WALL_ALIGN_MAX_STEP_10) off = -WALL_ALIGN_MAX_STEP_10;
+        w->last    = (int16_t)off;
+        w->last_ms = millis();
+        if (w->pend_n < WALL_ALIGN_DELAY) {
+            w->pend[w->pend_n++] = (int16_t)off;
+            return 0;
+        }
+        *off10 = w->pend[0];                                    // oldest: wall went on
+        for (k2 = 0; k2 + 1 < WALL_ALIGN_DELAY; k2++) w->pend[k2] = w->pend[k2 + 1];
+        w->pend[WALL_ALIGN_DELAY - 1] = (int16_t)off;
+    }
+    return 1;
+}
+
+static void align_to_walls(int16_t gyro_rate) {
+    uint8_t steady = !Motion_IsSuspect() &&
+                     gyro_rate < WALL_ALIGN_MAX_RATE_LSB && gyro_rate > -WALL_ALIGN_MAX_RATE_LSB &&
+                     (millis() - s_begin_ms) > (KICK_MS + DRIVE_SPINUP_MS);
+    uint8_t k;
+    for (k = 0; k < 2; k++) {
+        int16_t off10;
+        const wall_fit_t *other = &s_al[k ^ 1u];
+        if (!wall_fit(&s_al[k], k ? SONAR_RIGHT : SONAR_LEFT, steady, &off10)) continue;
+        // Both walls in view, and they disagree about the angle: one of them
+        // is not a wall (a wall END, most likely -- see wall_fit). Use neither.
+        if (other->pend_n > 0 && (millis() - other->last_ms) < WALL_ALIGN_PAIR_MS) {
+            int16_t d = (int16_t)(s_al[k].last - other->last);
+            if (d > WALL_ALIGN_AGREE_10 || d < -WALL_ALIGN_AGREE_10) continue;
+        }
+        Heading_GridAdjust(((int32_t)off10 * GYRO_LSB_MS_PER_DEGREE) /
+                           (10L * WALL_ALIGN_GAIN_DEN));
+    }
 }
 
 static void tick_at(uint8_t base, int16_t gyro_rate) {
@@ -182,6 +360,16 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
         s_dbg.pwm_l = 0; s_dbg.pwm_r = 0;
         s_dbg.l_ok = l_ok; s_dbg.r_ok = r_ok;
 
+        if (s_recover_phase == 2) {
+            // The pivot-away ends on ANGLE, not just time: a fixed 300 ms
+            // pivot is anything from 30 to well over 90 degrees depending on
+            // the battery, and a big one leaves the robot facing a different
+            // corridor with no idea it has done so.
+            int32_t turned = Heading_GridError() - s_recover_hdg0;
+            if (turned < 0) turned = -turned;
+            if (turned >= (int32_t)WALL_RECOVERY_PIVOT_DEG * GYRO_LSB_MS_PER_DEGREE)
+                s_recover_until = millis();
+        }
         if ((int32_t)(millis() - s_recover_until) < 0) return; // motors already set, wait
 
         if (s_recover_phase == 1) {
@@ -191,6 +379,7 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
             // one-sided emergency below already uses.
             uint8_t cw = (s_emerg_side == 1) ? 1 : 0;
             Motors_Pivot(cw, WALL_RECOVERY_PIVOT_PWM);
+            s_recover_hdg0  = Heading_GridError();
             s_recover_phase = 2;
             s_recover_until = millis() + WALL_RECOVERY_PIVOT_MS;
             Debug_P("  -> clear of wall, pivoting away\r\n");
@@ -352,6 +541,7 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
     // and the missed ones. Inside the band the wall term is dropped entirely
     // and only gyro damping remains, so the robot tracks straight rather than
     // hunting for a centre it is already at.
+    align_to_walls(gyro_rate);
     if (error_cm <= WALL_DEADBAND_CM && error_cm >= -WALL_DEADBAND_CM) {
         error_cm = 0;
     }
@@ -369,6 +559,25 @@ static void tick_at(uint8_t base, int16_t gyro_rate) {
     s_dbg.wall_term = corr;
 
     s_dbg.gyro_term = (int16_t)(((int32_t)WALL_KD_NUM * gyro_rate) / WALL_KD_DEN);
+
+    // --- HEADING HOLD -----------------------------------------------------
+    // Steer back onto the maze-grid heading. Without this term the controller
+    // only DAMPED yaw: a disturbance -- the drive-off kick, a wheel that bit
+    // late -- was slowed down but never undone, so the robot kept the angle
+    // it was knocked to and only the (deadbanded, slow) wall term eventually
+    // noticed, after it had drifted a few cm toward one wall. The real logs
+    // show exactly that: 25-68 deg/s of yaw at the start of legs, then L=8 cm.
+    //
+    // It also cooperates with centring rather than fighting it: to close a
+    // lateral error the wall term has to tilt the robot, and the equilibrium
+    // tilt is wall_term / HEADING_KP -- a few degrees toward the centre line,
+    // shrinking to zero as the error does.
+    {
+        int16_t h = (int16_t)((Heading_GridErrorTenths() * HEADING_KP_NUM) /
+                              (10L * HEADING_KP_DEN));
+        h = clamp16(h, -HEADING_MAX_CORR, HEADING_MAX_CORR);
+        s_dbg.gyro_term += h;
+    }
     corr += s_dbg.gyro_term;
 
     // --- YAW GOVERNOR -----------------------------------------------------

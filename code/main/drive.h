@@ -24,7 +24,7 @@ typedef enum {
 typedef struct {
     int16_t error_cm;    // wall error the controller actually saw
     int16_t wall_term;   // proportional contribution
-    int16_t gyro_term;   // derivative contribution
+    int16_t gyro_term;   // yaw-rate damping + grid heading hold
     int16_t corr;        // final, after clamping
     uint8_t pwm_l;       // what was actually written to the motors
     uint8_t pwm_r;
