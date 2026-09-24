@@ -4,18 +4,12 @@
 #include "heading.h"
 #include "sonar.h"
 #include "drive.h"
-#include "maze.h"
 #include "debug.h"
 #include "timer.h"
 
 void Telemetry_Header(void) {
     Debug_P("# st,L,F,R,lok,rok,near,fv,md,br,err,wt,gt,corr,pwmL,pwmR,"
             "rock,rate,gx,gy,ovr,drop");
-    Debug_NL();
-}
-
-void Telemetry_NoneHeader(void) {
-    Debug_P("# no periodic CSV in this mode -- event and summary lines only");
     Debug_NL();
 }
 
@@ -30,7 +24,7 @@ void Telemetry_Tick(const tick_ctx_t *t) {
 
 #if DEBUG_LEVEL >= 1
     d = Drive_Debug();
-    Debug_CSV((int32_t)Maze_State());
+    Debug_CSV((int32_t)Solver_State());
     Debug_CSV(Sonar_Median(SONAR_LEFT));
     Debug_CSV(Sonar_Median(SONAR_FRONT));
     Debug_CSV(Sonar_Median(SONAR_RIGHT));

@@ -2,19 +2,18 @@
 #define CONFIG_H
 
 // ============================================================================
-//  CENTRAL CONFIGURATION
-//  Every tunable number in the project lives here. Nothing else should
-//  contain a magic constant.
+//  CENTRAL CONFIGURATION -- the two-run maze solver
 //
-//  Values marked [MEASURE] are placeholders chosen by estimate -- you must
-//  replace them with real measurements from your robot/maze before the
-//  behaviour will be correct. See README_TUNING.md.
+//  Every tunable number in the firmware lives here. Nothing else should
+//  contain a magic constant. Sections marked [MEASURE] describe the physical
+//  robot or maze and must match what you actually built; the tuning list in
+//  README.md says which ones matter most and how to measure them.
 // ============================================================================
 
 #define F_CPU 16000000UL
 
 // ---------------------------------------------------------------------------
-//  1. PIN ALLOCATION   (from your CSE 315 notes pin map)
+//  1. PIN ALLOCATION
 // ---------------------------------------------------------------------------
 // PORTA -- Sonar array (all three mounted PERPENDICULAR, not angled)
 #define SONAR_PORT      PORTA
@@ -37,7 +36,7 @@
 #define RIGHT_IN4_BIT   PC5
 
 // PORTD -- USART + PWM
-//   PD0 = RXD, PD1 = TXD
+//   PD0 = RXD, PD1 = TXD  (38400 8N1, see section 13)
 //   PD4 = OC1B = LEFT wheel PWM
 //   PD5 = OC1A = RIGHT wheel PWM
 #define PWM_DDR         DDRD
@@ -79,6 +78,9 @@
 #define BUTTON_PIN      PIND
 #define BUTTON_BIT      PD6
 
+// Consecutive agreeing samples before the debounced button level moves. At
+// CONTROL_TICK_MS = 20 this is 60 ms, comfortably past the few ms a panel
+// button bounces for, and far too short to feel laggy.
 #define BUTTON_DEBOUNCE_TICKS  3
 
 // Hold the button this long to throw the saved route away and explore again.
@@ -86,50 +88,43 @@
 // which during a lab session is exactly when you least want to.
 #define BUTTON_LONG_PRESS_MS   2000UL
 
-#define LED_BLINK_SLOW_MS      500   // ~1 Hz -- finished
-#define LED_BLINK_FAST_MS      120   // ~4 Hz -- fault
+#define LED_BLINK_SLOW_MS      500   // ~1 Hz -- run 2 finished
+#define LED_BLINK_FAST_MS      120   // ~4 Hz -- fault / log did not collapse
 
 // ---------------------------------------------------------------------------
 //  2. ROBOT PHYSICAL DIMENSIONS          [MEASURE ALL OF THESE]
 // ---------------------------------------------------------------------------
-#define ROBOT_LENGTH_CM        22   // measured
 #define ROBOT_WIDTH_CM         16   // measured (widest point incl. any overhang)
 
 // Distance from the FRONT sonar face back to the wheel axle (the pivot centre).
 // This is what makes the robot stop with its axle -- not its nose -- centred
-// in an opening. Single most important number in Phase 4.
+// in an opening before it turns.
 #define SONAR_TO_AXLE_CM       15   // measured
 
 // Cruise speed in cm/s at DRIVE_BASE_PWM. With no working encoders, every
-// distance in this project is (time x speed), so this must be measured.
+// distance in this firmware is (time x speed), so this must be measured.
 //
-// NOW MEASURED, from the Mode 10 front-range traces rather than a stopwatch.
-// Over the steady part of the cruise phase the front range closed at 28 cm/s
-// on two runs (log3: 51->33 cm in 0.65 s; log4: 56->32 cm in 0.85 s). The old
-// placeholder of 20 was low by 50%, which made every time-based distance in
-// Mode 3 -- APPROACH_TIME_MS above all -- overshoot by half as much again.
+// Measured from front-range traces rather than a stopwatch: over the steady
+// part of the cruise the front range closed at 28 cm/s on two runs (51->33 cm
+// in 0.65 s; 56->32 cm in 0.85 s). The old placeholder of 20 was low by 50%,
+// which made every time-based distance -- APPROACH_TIME_MS above all --
+// overshoot by half as much again.
 //
 // Caveat worth keeping in mind: late in a run the same measurement gives
 // 41-46 cm/s. That is the chassis still accelerating, not a second speed, so
-// 30 is the conservative figure for a leg that starts from rest. Re-measure
-// over a long straight leg if Mode 3 distances still run long.
-#define TRAVEL_SPEED_CMS       30   // measured from Mode 10 traces
+// 30 is the conservative figure for a leg that starts from rest. It also
+// drifts with battery charge -- re-measure on a fresh pack.
+#define TRAVEL_SPEED_CMS       30   // measured
 
 // ---------------------------------------------------------------------------
 //  3. MAZE GEOMETRY                       [MATCH TO YOUR BUILT MAZE]
 // ---------------------------------------------------------------------------
-// Pivot radius at ROBOT_LENGTH_CM=22, ROBOT_WIDTH_CM=16 is ~13.6cm (2R~27.2cm).
-// At 30cm this leaves ~1.4cm clearance PER SIDE during an in-place pivot --
-// the geometric minimum assuming perfect centring, with no margin for turn
-// overshoot or approach-timing error. Verify this physically (Mode 2, watch
-// the corners during the pivot) before trusting it unsupervised. If it
-// clips, the fix is a wider corridor, not a software change.
 // *** SET THIS TO YOUR ACTUAL BUILT CORRIDOR WIDTH. *** It is load-bearing in
-// more places than it looks: CORRIDOR_HALF_CM is the target distance for
-// single-wall centring (get it wrong and the robot deliberately drives
-// off-centre by the error), OPENING_THRESHOLD_CM and APPROACH_DISTANCE_CM are
-// both derived from it, and so is the emergency band below.
-// Raised 30 -> 40 to match the test maze that was actually designed and built.
+// more places than it looks: OPENING_THRESHOLD_CM, APPROACH_DISTANCE_CM,
+// EXIT_FALSE_WINDOW_CM and the emergency band below are all derived from it.
+// The in-place pivot sweeps a ~34 cm circle about the axle, so at 40 cm there
+// are ~3 cm of clearance per side -- if the corners clip during a turn, the
+// fix is a wider corridor, not a software change.
 #define CORRIDOR_WIDTH_CM      40   // wall face to wall face
 #define CORRIDOR_HALF_CM       (CORRIDOR_WIDTH_CM / 2)
 
@@ -140,8 +135,8 @@
 
 // What a side sonar ACTUALLY READS when the robot is centred.
 //
-// This is deliberately NOT CORRIDOR_HALF_CM, and the logs are why. Across all
-// four Mode 10 runs the two side readings summed to 28-31 cm, while the
+// This is deliberately NOT CORRIDOR_HALF_CM, and the logs are why. Across four
+// logged corridor runs the two side readings summed to 28-31 cm, while the
 // geometry above predicts CORRIDOR_WIDTH_CM - ROBOT_WIDTH_CM = 24. The extra
 // ~5 cm is real and repeatable: the sensor faces sit inboard of the widest
 // part of the chassis, so each one reads a few cm more than the true gap.
@@ -151,7 +146,7 @@
 // wall disappears, because CENTER_LEFT_ONLY / CENTER_RIGHT_ONLY steer toward
 // an absolute target: aiming at CORRIDOR_HALF_CM (20) when centred actually
 // reads ~14.5 would drive the robot 5 cm off-centre on purpose, every time it
-// passed an opening.
+// passed an opening. In the demo maze most legs have only one wall.
 //
 // Re-measure by parking the robot centred in the corridor and halving the
 // logged L+R.
@@ -190,7 +185,7 @@
 // measure. These MUST NOT share a value -- a sub-minimum reading means
 // "wall about to be hit", the exact opposite of "nothing there". Aliasing
 // them makes the robot report an opening at the instant it is about to
-// collide, and (in maze mode) turn straight into the wall.
+// collide, and turn straight into the wall.
 #define SONAR_TOO_CLOSE        1
 
 // Physical ambiguity: below ~3 cm the echo can return before the sensor
@@ -209,7 +204,7 @@
 #define SONAR_MAX_JUMP_CM      15
 
 // ---------------------------------------------------------------------------
-//  6. MOTION-SUSPECT DETECTION  (your point #5)
+//  6. MOTION-SUSPECT DETECTION
 // ---------------------------------------------------------------------------
 // When the chassis pitches or rolls, a perpendicular sonar beam tilts off the
 // wall -- it can hit the floor (short reading) or sail over the wall top
@@ -260,8 +255,26 @@
                                     // connector; keep whatever works
 #define KICK_MS                40
 
+// KICK RAMP -- brownout mitigation.
+//
+// Every failed run in the early brown-out logs died at a PWM-120 kick, and
+// none died anywhere else: just after Drive_Begin()'s kick, immediately after
+// the first pivot's kick, immediately after the second pivot's kick. The one
+// run on the freshest battery survived. Every failure reported BORF with SRAM
+// intact: the rail dipped below the brown-out threshold and recovered, rather
+// than a broken connection.
+//
+// Stepping 0 -> 120 in one PWM period is the largest current transient the
+// firmware ever asks for: the motor is stalled, so it draws locked-rotor
+// current with no back-EMF to oppose it. Ramping over the kick spreads that
+// same impulse over KICK_MS and roughly halves the peak.
+//
+// THIS IS MITIGATION, NOT A CURE. The root cause is supply, not firmware.
+// Set to 0 to restore the old instant step.
+#define KICK_RAMP              1
+
 // ---------------------------------------------------------------------------
-//  8. WALL-CENTERING CONTROLLER
+//  8. WALL-CENTRING CONTROLLER
 // ---------------------------------------------------------------------------
 // Correction = (Kp_num * error_cm)/Kp_den + (Kd_num * gyro_rate)/Kd_den
 // Integer fractions are used instead of floats (no FPU on ATmega32).
@@ -272,7 +285,7 @@
 #define WALL_KP_NUM            3
 #define WALL_KP_DEN            2    // 1.5 PWM counts per cm of centring error
 
-// Gyro damping. Positive gyro Z = turning LEFT (matches your original
+// Gyro damping. Positive gyro Z = turning LEFT (matches the original
 // straight-line code, where a positive accumulator slowed the right wheel).
 //
 // Raised from /120 to /65. At /120 the damping was far too weak to oppose
@@ -291,25 +304,17 @@
 // to what +-35 gave at the original base of 75.
 #define WALL_MAX_CORRECTION_RATIO_PCT  37
 
-// Never let the differential exceed this, or a bad reading can spin the robot.
-// Derived from DRIVE_BASE_PWM so lowering the base speed automatically
-// softens the steering instead of sharpening it.
-#define WALL_MAX_CORRECTION    ((DRIVE_BASE_PWM * WALL_MAX_CORRECTION_RATIO_PCT) / 100)
-
 // Emergency avoidance: inside this distance the proportional correction is
 // too slow. Severity RAMPS with proximity rather than slamming to full
 // differential at the threshold -- measured logs show a hard +-35 step at
 // exactly 8cm produced 71 deg/s of yaw and bounced the robot from one wall
 // straight into the other.
 //
-// THIS WAS A FIXED 8 AND THAT WAS A BUG. At CORRIDOR_WIDTH_CM=30 the centred
+// THIS WAS ONCE A FIXED 8 AND THAT WAS A BUG. At a 30 cm corridor the centred
 // side gap is (30-16)/2 = 7 cm, so a PERFECTLY CENTRED robot sat inside the
-// emergency band on BOTH sides. Being slightly off-centre then put one side
-// under 8 while the other was over it, which is exactly the one-sided
-// emergency condition: the robot hard-steered away from a wall it was not
-// close to, and after WALL_STUCK_MS escalated to a reverse-and-pivot
-// recovery. That is the reported "behaves really badly when it isn't placed
-// exactly in the middle" -- it was a geometry contradiction, not tuning.
+// emergency band on BOTH sides, hard-steered away from walls it was not close
+// to, and escalated into reverse-and-pivot recoveries. It was a geometry
+// contradiction, not tuning.
 //
 // Derived from the actual gap now, so it cannot contradict the corridor:
 // 45% of the centred gap, never below 4 cm (under that the sonar's own
@@ -338,63 +343,6 @@
 // controller micro-steers continuously on sonar quantisation noise, and every
 // one of those little yaws walks the front beam off whatever is ahead.
 #define WALL_DEADBAND_CM        2
-
-// GYRO HEADING HOLD for timed straight legs (Modes 5 and 7).
-// This is the straight-line autocorrect from the original single-file
-// firmware brought forward: P on ACCUMULATED heading error plus D on rate.
-// The wall-centring controller cannot do this job -- with no valid sonar it
-// falls into CENTER_GYRO_ONLY, where error_cm is 0, so only the rate term
-// survives. That damps rotation but never returns to the original heading:
-// drift 10 degrees, stop rotating, and the correction goes to zero with the
-// robot still 10 degrees off.
-//
-// Kp is in PWM counts per TENTH of a degree. 1/8 = 1.25 counts per degree,
-// which reproduces the original algorithm's authority: it used
-// heading_accum/2600 on raw LSB at a 10ms loop, and one degree is 65500
-// LSB*ms, so 65500/26000 = 2.5 counts per degree of DIFFERENTIAL. This
-// controller is symmetric (base +/- corr), so the differential is 2*corr and
-// 1.25 per degree matches.
-//
-// D gets its OWN constant. Reusing WALL_KD_NUM/WALL_KD_DEN (=1/65) here was
-// wrong: that was tuned against a P term measured in CENTIMETRES of wall
-// offset, where P contributes 7..22 counts on a normal 5-15cm error. This P
-// term is in degrees and contributes only 1.25 counts per degree, so the same
-// D is proportionally about 3x too strong -- and a measured run proved it. At
-// /65, one deg/sec of rotation cancels 0.8 degrees of heading error, so the
-// controller behaved as a rate damper, not a position controller:
-//
-//   L,1281,62,-503,0,60,60   <- 6.2 deg off heading, correction ZERO
-//                               P = 62/8 = +7, D = -503/65 = -7, sum 0
-//
-// The original algorithm's ratio was 2.52 counts/degree against rate/100 of
-// DIFFERENTIAL, i.e. one deg/sec cancelled only 0.26 degrees of error. This
-// controller is symmetric (base +/- corr) so the differential is 2*corr, and
-// /200 reproduces that ratio exactly.
-//
-// Deliberately NOT adding an I term yet. The measured bias is a start-up
-// transient, not a constant offset, and an integrator on this loop is how
-// bug #1 (windup to saturation, first crash) happened. Fix the ratio first.
-#define HOLD_TICK_MS           10   // matches the original autocorrect loop
-#define HOLD_KP_NUM            1
-#define HOLD_KP_DEN            8
-#define HOLD_KD_NUM            1
-#define HOLD_KD_DEN            200
-
-// Per-sample trace of the heading-hold controller, so a leg that does not
-// track straight can be diagnosed from the log instead of guessed at:
-//   L,<ms into leg>,<err10>,<rate>,<corr>,<pwmL>,<pwmR>
-// err10 is heading error in tenths of a degree (+ = left of target), rate is
-// raw LSB, corr is the differential the controller asked for, and pwmL/pwmR
-// are what actually reached the motors AFTER clamping -- when those two stop
-// differing by 2*corr, the correction is being eaten by MOTOR_MIN_PWM or
-// MOTOR_MAX_PWM and the controller has no authority left.
-//
-// A line is ~34 bytes. At HOLD_TICK_MS=10 every sample would be ~3400 byte/s
-// against a 3840 byte/s budget at 38400 baud -- no headroom, so bytes drop.
-// Decimating by 2 puts it near 44%. Raise this if `drop` climbs in the
-// per-leg summary.
-#define HOLD_TRACE             1
-#define HOLD_SAMPLE_EVERY      2
 
 // WALL-STUCK RECOVERY.
 // The ramped emergency steer above still drives BOTH wheels forward -- it
@@ -428,45 +376,17 @@
 // is the same idea for forward motion. Set DRIVE_BRAKE_MS to 0 to disable.
 //
 // Too long and the pulse pushes the robot backwards instead of stopping it.
-// The Mode 10 log prints the front distance at the stop decision and again
-// after the brake, so the residual coast is directly measurable -- tune
-// against that, not by eye.
+// Tune against the front distance logged at a dead-end stop, not by eye.
 #define DRIVE_BRAKE_PWM         100
 #define DRIVE_BRAKE_MS          80
 
 // Below this base speed, do NOT lift both wheels to keep a wheel off the stall
 // floor -- clamp the correction instead, so the MEAN speed stays what was
-// asked for.
-//
-// The lift exists to preserve the steering differential, and at cruise that is
-// the right trade. At creep it inverts the whole point of creeping: with
-// MOTOR_MIN_PWM at 45, a base of 48 left 3 counts of headroom, so nearly every
-// correction triggered a lift and the logged mean came back to 50-62 -- cruise
-// speed under a "creep" label. Measured means were 50.6, 52.8 and 56.2 against
-// a nominal 48. Below this threshold, steering authority yields to speed
-// control; the robot is close to the obstacle and moving slowly, so arriving
-// at the right SPEED matters more than shaving the last degree off centring.
+// asked for. At cruise the solver never drops below it, so in practice this
+// only matters if DRIVE_BASE_PWM is lowered close to MOTOR_MIN_PWM: with a
+// base of 48 and a floor of 45, nearly every correction triggered a lift and
+// the logged mean came back at cruise speed (50.6 / 52.8 / 56.2 against 48).
 #define DRIVE_MEAN_PRESERVE_BELOW  58
-
-// KICK RAMP -- brownout mitigation.
-//
-// Every failed run in the four Mode 10 logs died at a PWM-120 kick, and none
-// died anywhere else:
-//   log2  t=103 ms, just after Drive_Begin()'s KICK_PWM kick
-//   log3  immediately after the first pivot's TURN_KICK_PWM kick
-//   log4  immediately after the SECOND pivot's kick
-//   log1  boot #1, freshest battery, survived the whole run
-// Every one reported BORF with SRAM intact: the rail dipped below the
-// brown-out threshold and recovered, rather than a broken connection.
-//
-// Stepping 0 -> 120 in one PWM period is the largest current transient the
-// firmware ever asks for: the motor is stalled, so it draws locked-rotor
-// current with no back-EMF to oppose it. Ramping over the kick spreads that
-// same impulse over KICK_MS and roughly halves the peak.
-//
-// THIS IS MITIGATION, NOT A CURE. The root cause is supply, not firmware --
-// see the analysis notes. Set to 0 to restore the old instant step.
-#define KICK_RAMP              1
 
 // YAW GOVERNOR.
 // Hard ceiling on how fast the chassis may rotate while centring. Beyond
@@ -478,24 +398,23 @@
 #define YAW_GOVERNOR_LSB       1300
 
 // ---------------------------------------------------------------------------
-//  9. JUNCTION / OPENING DETECTION
+//  9. JUNCTION DETECTION
 // ---------------------------------------------------------------------------
 // A side reads "open" beyond this. Corridor half-width plus margin.
 #define OPENING_THRESHOLD_CM   (CORRIDOR_HALF_CM + 10)   // 30 cm at 40 cm corridors
 
 // Front is considered blocked closer than this. Must be generous enough that
-// at a T-junction the front wall registers as blocked BEFORE the two side
-// openings appear -- otherwise a T momentarily looks like the maze exit.
-// (Currently equals OPENING_THRESHOLD_CM by coincidence, not by design --
-// they are independent constants for different sensors and may diverge if
-// either is retuned.)
+// at a T-junction the front wall registers as blocked quickly once the two
+// side openings appear -- see EXIT_FALSE_WINDOW_CM in section 11, which is
+// derived from it.
 #define FRONT_BLOCKED_CM       25
 
 // Consecutive confirmations before believing a side opening.
 #define OPENING_CONFIRM        2
 
 // Consecutive confirmations before believing a dead end (all three walled).
-// Higher than OPENING_CONFIRM: a spurious U-turn is expensive.
+// Higher than OPENING_CONFIRM: a spurious U-turn is expensive, and in run 1 it
+// is also written into the log.
 #define DEADEND_CONFIRM        3
 
 // Front-obstacle detection uses VOTING over a window, not consecutive hits.
@@ -513,9 +432,6 @@
 #define FRONT_VOTE_WINDOW      5
 #define FRONT_VOTE_THRESHOLD   2
 
-// Kept for the Mode 1 harness; the voting above is what actually decides.
-#define FRONT_STOP_CONFIRM     1
-
 // ---------------------------------------------------------------------------
 //  10. APPROACH OFFSET  (front-mounted sonar compensation)
 // ---------------------------------------------------------------------------
@@ -526,19 +442,20 @@
 #define APPROACH_TIME_MS       (((uint32_t)APPROACH_DISTANCE_CM * 1000UL) / TRAVEL_SPEED_CMS)
 
 // When the front is blocked we cannot drive the full approach distance --
-// stop this far from the wall instead and pivot there.
+// stop this far from the wall instead and pivot there. In practice this, not
+// APPROACH_TIME_MS, is what ends the approach at any junction with a front
+// wall (T, forced turn, dead end).
 #define FRONT_STOP_CM          12
 
 // ---------------------------------------------------------------------------
-//  11. END-OF-MAZE DETECTION  (your point #3)
+//  11. EXIT DETECTION
 // ---------------------------------------------------------------------------
 // All three sensors open => exit. But a junction can look exactly the same for
 // a short window, so on first detection the robot drives on and re-checks: a
 // real exit stays open, a junction's front wall closes in.
 //
-// HOW FAR IS "ON"? This used to be a flat 25, which happened to be right. It is
-// now derived, because the number is not free -- it is pinned by geometry at
-// both ends, and a corridor width change would silently break it.
+// HOW FAR IS "ON"? The number is not free -- it is pinned by geometry at both
+// ends, and a corridor width change would silently break a hard-coded value.
 //
 // The moment the front sonar crosses into a junction cell, that cell's far wall
 // is CORRIDOR_WIDTH_CM ahead and therefore reads OPEN; both sides have just
@@ -571,7 +488,7 @@
 // ASSUMPTION, not checkable at compile time: the maze has no 4-way crossroads.
 // At a true crossroads all three sensors stay open for a whole cell, which is
 // longer than this window, and the robot would call it the exit. The demo maze
-// in WALLMEM.md has none -- deliberately, since a 4-way also leaves nothing for
+// in README.md has none -- deliberately, since a 4-way also leaves nothing for
 // the wall-centring to hold on to while crossing it.
 
 // ---------------------------------------------------------------------------
@@ -582,12 +499,17 @@
 #define TURN_KICK_MS           40
 #define TURN_BRAKE_PWM         100
 #define TURN_BRAKE_MS          20
-// Measured (6-turn Mode 6 run, both directions): after the motors cut, the
+// Measured (6 logged turns, both directions): after the motors cut, the
 // chassis was still rotating above ~3 deg/sec for the WHOLE 300ms window --
-// coastms came back 283..305 against a 300 window, and one turn was still at
+// coast_ms came back 283..305 against a 300 window, and one turn was still at
 // 23 deg/sec when it closed. The closed-loop correction below was therefore
 // measuring a heading that had not stopped changing. 500 gives real margin.
 #define TURN_SETTLE_MS         500  // motors off, still integrating coast
+
+// |yaw rate| below this counts as "stopped" when measuring how long the
+// chassis actually coasts after the motors cut (turn_result_t.coast_ms).
+// Raw LSB; 65.5 LSB per deg/sec, so 200 ~= 3 deg/sec.
+#define TURN_STILL_LSB         200
 
 // Cut the main sweep this early. Was 4, which was not a coast estimate at all
 // -- measured coast from sweep exit to rest is 36.7/40.2/40.9/41.0/46.4/42.3
@@ -602,7 +524,8 @@
 // and quadratically with cut-off rate, which puts the landing at 89.6..92.8
 // degrees. The nudge loop trims either end of that easily -- and it corrects
 // in BOTH directions, so an over- or under-estimate here is self-healing.
-// NEEDS ONE MODE 6 RUN TO CONFIRM: expect err10 near zero and nudges 0-1.
+// To confirm on the bench, watch the per-turn trace (TURN_TRACE): expect the
+// initial error near zero and 0-1 nudges.
 //
 // This value is calibrated for 90 degree turns. A single 180 degree sweep
 // would exit far faster and coast much further, which is the real reason
@@ -621,9 +544,9 @@
 // one -- which is how a "converging" turn ends up oscillating around the
 // target instead of settling into TURN_DEADBAND_DEG.
 // ms = clamp(error_deg * TURN_NUDGE_MS_PER_DEG, MIN, MAX). Tune
-// TURN_NUDGE_MS_PER_DEG by watching `err10`/nudge count in Mode 2 telemetry:
-// still 2+ nudges of the same sign in a row -> raise it; nudges routinely
-// overshoot the deadband the other way -> lower it.
+// TURN_NUDGE_MS_PER_DEG from the per-turn trace: still 2+ nudges of the same
+// sign in a row -> raise it; nudges routinely overshoot the deadband the other
+// way -> lower it.
 #define TURN_NUDGE_MS_MIN      8
 #define TURN_NUDGE_MS_MAX      40
 #define TURN_NUDGE_MS_PER_DEG  6    // ms per whole degree of residual error
@@ -635,13 +558,38 @@
 // long sweep because momentum has less time to build. Set 0 for a single 180.
 #define TURN_180_AS_TWO_90S    1
 
+// Per-phase turn trace: each phase boundary prints the heading it ended at
+// (about 10 short lines per turn, ~250 bytes over ~1.5 s: no risk to the byte
+// budget). This is what tells a too-short settle from a too-long coast from a
+// clipping gyro. Set 0 for a quieter log once the turns are trusted.
+#define TURN_TRACE             1
+
+// U-TURN DIRECTION.
+// An in-place pivot is NOT symmetric. The chassis rotates about the AXLE,
+// which sits SONAR_TO_AXLE_CM behind the nose, so:
+//   front corners swing  sqrt(15^2 + 8^2) = 17.0 cm from the axle
+//   rear corners swing   sqrt( 7^2 + 8^2) = 10.6 cm from the axle
+// The front corners sweep into the side being turned TOWARDS; the rear corners
+// sweep out the opposite side. The turning side therefore needs ~6.4 cm more
+// free space than the other. If the chassis is hugging the left wall, rotating
+// LEFT drags the wide front corner straight into it, while rotating RIGHT
+// only puts the narrow rear corner there. Hence at a dead end the solver
+// rotates AWAY from the nearer wall.
+//
+// Only commit to a side when the two walls differ by at least this much. Below
+// it the readings are within sonar noise of each other and "nearer wall" is a
+// coin flip, so UTURN_TIE_DIR is used instead of chasing the noise.
+#define UTURN_DECIDE_MARGIN_CM 3
+#define UTURN_TIE_DIR          TURN_RIGHT
+
 // ---------------------------------------------------------------------------
-//  13. GYRO CALIBRATION      (your point #4)
+//  13. GYRO CALIBRATION
 // ---------------------------------------------------------------------------
 // Full calibration at power-up.
 #define GYRO_CAL_SAMPLES_INIT  500
 // Shorter re-calibration performed after every stop and every pivot, to catch
-// thermal bias drift. Kept brief so it does not dominate the run time.
+// thermal bias drift, and after every button press, since the operator has
+// just handled the chassis. Kept brief so it does not dominate the run time.
 #define GYRO_CAL_SAMPLES_QUICK 150
 #define GYRO_CAL_INTERVAL_MS   2
 
@@ -652,7 +600,7 @@
 #define GYRO_CAL_RETRIES       3
 #define GYRO_SETTLE_MS         250  // wait for the chassis to stop rocking first
 
-// Empirical trim carried over from your straight-line tuning, re-applied after
+// Empirical trim carried over from the straight-line tuning, re-applied after
 // every calibration.
 #define GYRO_OFFSET_TRIM       3
 
@@ -661,302 +609,33 @@
 //     degrees = accum / (65.5 * 1000) = accum / 65500
 // This is sample-rate independent, which is why the turn loop and the drive
 // loop can run at different tick rates without separate constants.
-// Tune by protractor: new = old * (commanded_angle / measured_angle).
+// Tune by protractor: new = old * (commanded_angle / measured_angle). Every
+// turn in both runs inherits this number, and a turn that lands well off 90
+// puts run 2 in a corridor the stored route does not describe.
 #define GYRO_LSB_MS_PER_DEGREE 65500L
 
 // ---------------------------------------------------------------------------
-//  14. RECOVERY & SAFETY
+//  14. RUN SAFETY
 // ---------------------------------------------------------------------------
 // After a turn the sonar history is meaningless. Drive gyro-only for this
 // long while the filters refill.
 #define RECOVER_MS             400
 
 // Longest a single straight leg may run before forcing a junction decision.
-// Safety net for walls the sonar misses entirely (angled/soft surfaces).
+// Safety net for walls the sonar misses entirely (angled/soft surfaces); the
+// solver treats a timeout as a dead end, through the same decision path.
 #define MAX_LEG_MS             10000UL
-
-// Stall detection: motors commanded but the gyro sees no rotation AND the
-// sonar readings are not changing. Usually means a power/connector fault.
-#define STALL_CHECK_MS         1500
 
 // Global run limit.
 #define MAX_RUN_MS             300000UL   // 5 minutes
 
-// Delay after power-up before moving, so you can put the robot down.
+// Settle time after the start button is pressed, before the robot moves: long
+// enough for the operator's hand to be clear and the chassis to stop rocking
+// before the gyro is re-zeroed.
 #define STARTUP_DELAY_MS       3000
 
 // ---------------------------------------------------------------------------
-//  15. DIAGNOSTIC BUILD MODES
-// ---------------------------------------------------------------------------
-// Mode 4: sonar cone characterization. Motors stay off; place the robot mid-
-// corridor and rotate it BY HAND while watching heading vs L/F/R to see
-// exactly what angle makes a beam pick up the wrong wall. Faster than
-// TELEMETRY_INTERVAL_MS -- this is a live, watch-it-happen test, not a logged
-// run, so finer time resolution on a slow hand rotation is worth more than
-// keeping the byte budget small.
-#define SONAR_TEST_INTERVAL_MS   50
-
-// Mode 5: open-loop square. No sonar, no wall centring, no corridor -- pure
-// forward-drive and turn-accuracy test. Four legs of SQUARE_LEG_MS forward at
-// SQUARE_TEST_PWM, each followed by a 90 degree turn, should return the robot
-// to its start point facing its start heading.
-#define SQUARE_TEST_PWM          60   // requested: keep base speed at 60
-#define SQUARE_LEG_MS            2000 // forward time per side, kick included
-#define SQUARE_TURN_SETTLE_MS    200  // let the chassis stop coasting before
-                                       // the turn's own kick fires -- same gap
-                                       // TURN_180_AS_TWO_90S uses between its
-                                       // two 90s
-#define SQUARE_SIDES             4
-
-// Also stream the per-sample yaw-rate profile through each of the square's
-// turns (the same stream Mode 6 uses). Legs and turns never overlap, so this
-// costs no extra bandwidth during a leg. Set 0 for a quieter log once the
-// turns are trusted and only the legs are in question.
-#define SQUARE_TRACE_TURNS       1
-
-// ---------------------------------------------------------------------------
-//  Mode 9: open-space obstacle avoidance
-// ---------------------------------------------------------------------------
-// Forward under gyro heading hold (no corridor, no wall centring) until the
-// front sonar sees something, then stop, pivot right 90, and drive one more
-// leg. Safety bound on the approach so an empty room does not mean driving
-// until the battery dies.
-#define AVOID_APPROACH_MAX_MS    15000UL
-
-// How far the second leg actually travels, and therefore how much room must
-// be clear in that direction BEFORE committing to the pivot. Derived rather
-// than guessed so it tracks the leg settings.
-//
-// This is only as good as TRAVEL_SPEED_CMS, which is measured but drifts with
-// battery charge -- re-measure it on a fresh pack before trusting the figure.
-#define AVOID_LEG_CM             (((uint32_t)SQUARE_LEG_MS * TRAVEL_SPEED_CMS) / 1000UL)
-#define AVOID_TURN_CLEARANCE_CM  (AVOID_LEG_CM + FRONT_BLOCKED_CM)
-
-// Clearance the PIVOT itself needs ahead of the front sonar. The axle sits
-// SONAR_TO_AXLE_CM behind the sonar face, and the front corners swing on a
-// radius of sqrt(SONAR_TO_AXLE^2 + (WIDTH/2)^2) = sqrt(15^2 + 8^2) = 17cm
-// about that axle -- note that is NOT the 13.6cm half-diagonal, which is the
-// radius about the geometric centre, and the axle is 4cm behind it. So the
-// corner clears the wall by (front_reading + SONAR_TO_AXLE_CM - 17). Stopping
-// with this much showing on the front sensor keeps that positive with margin.
-#define AVOID_PIVOT_CLEARANCE_CM 10
-
-// Per-phase turn tracing. A turn is blocking and prints nothing per sample
-// today, so a Mode 2 run yields ONE summary line -- not enough to tell a
-// too-short settle from a too-long coast from a clipping gyro. With this on,
-// each phase boundary prints the heading it ended at (about 10 short lines
-// per turn, ~250 bytes over ~1.5 s: no risk to the byte budget). Turn it off
-// for Mode 3 runs, where it would interleave with corridor telemetry.
-#define TURN_TRACE               1
-
-// Mode 8: gyro / I2C connection diagnostic.
-// Bounded TWI wait, used ONLY by I2C_ReadRegs() on the diagnostic path. One
-// byte at 100 kHz is ~90us, so 5ms is enormously generous -- if it expires the
-// bus really has stopped answering.
-#define I2C_TIMEOUT_US           5000UL
-#define GYRODIAG_READS           200    // reliability + noise-floor samples
-#define GYRODIAG_MONITOR_MS      60000UL// live monitor window
-#define GYRODIAG_CHECK_MS        250    // config re-verify interval during it
-// A healthy MPU6050 lying still still jitters by this much on one axis. ZERO
-// spread means the value is frozen -- stale data rather than a live read, the
-// signature of a half-dead bus. A spread far above the ceiling means
-// electrical noise on the supply or the signal lines.
-#define GYRODIAG_NOISE_MIN       5
-#define GYRODIAG_NOISE_MAX       400
-
-// Mode 6: dedicated turn debugging. Repeats a pivot with a pause after each
-// one so the physical angle can be measured and written down, and streams the
-// raw yaw rate through the whole turn so the angular-velocity profile can be
-// reconstructed offline -- that profile is what separates "the coast is longer
-// than TURN_SETTLE_MS" from "the gyro is clipping" from "the brake pulse does
-// nothing", which a single end-of-turn angle cannot.
-#define TURNDBG_ANGLE            90
-#define TURNDBG_REPEATS          6
-// Alternate R,L,R,L... Turn error that differs by direction means a motor or
-// tyre asymmetry, not a calibration error -- and it exercises the direction
-// sign check (turn_result_t.wrong_way) both ways.
-#define TURNDBG_ALTERNATE        1
-#define TURNDBG_PAUSE_MS         6000 // protractor the angle, write it down
-
-// Per-sample stream decimation. 1 = every TURN_TICK_MS (5ms) sample, which is
-// ~22 bytes per 5ms against a 3840 byte/s budget at 38400 baud -- over 100%,
-// so bytes WILL drop. 2 = every 10ms (~57%), which fits with headroom. Watch
-// the `drop` field in the per-turn summary: if it climbs, raise this.
-#define TURNDBG_SAMPLE_EVERY     2
-
-// |yaw rate| below this counts as "stopped" when measuring how long the
-// chassis actually coasts after the motors cut. Raw LSB; 65.5 LSB per deg/sec,
-// so 200 ~= 3 deg/sec.
-#define TURNDBG_STILL_LSB        200
-
-// ---------------------------------------------------------------------------
-//  15b. MODE 10: DEAD-END 180
-// ---------------------------------------------------------------------------
-// Drive the corridor centred, treat a front obstacle as a dead end, and turn
-// around -- picking the rotation direction from where the chassis actually
-// sits between the walls.
-//
-// WHY DIRECTION MATTERS. An in-place pivot is NOT symmetric. The chassis
-// rotates about the AXLE, which sits SONAR_TO_AXLE_CM behind the nose, so:
-//   front corners swing  sqrt(15^2 + 8^2) = 17.0 cm from the axle
-//   rear corners swing   sqrt( 7^2 + 8^2) = 10.6 cm from the axle
-// The front corners sweep into the side being turned TOWARDS; the rear corners
-// sweep out the opposite side. The turning side therefore needs ~6.4 cm more
-// free space than the other. If the chassis is hugging the left wall, rotating
-// LEFT drags the wide front corner straight into it, while rotating RIGHT
-// only puts the narrow rear corner there. Hence: turn AWAY from the near wall.
-#define PIVOT_FRONT_RADIUS_CM  17   // sqrt(SONAR_TO_AXLE^2 + (WIDTH/2)^2)
-
-// THIS ONE IS HAND-COMPUTED AND DOES NOT TRACK ITS INPUTS. The preprocessor has
-// no sqrt, so re-measuring the chassis silently leaves the old radius behind --
-// and an under-stated pivot radius means the firmware believes a 180 clears a
-// wall that it actually grazes. Comparing the SQUARES needs no sqrt, so the
-// build can at least refuse to be wrong in the dangerous direction:
-#if ((PIVOT_FRONT_RADIUS_CM) * (PIVOT_FRONT_RADIUS_CM)) < \
-    ((SONAR_TO_AXLE_CM) * (SONAR_TO_AXLE_CM) + \
-     ((ROBOT_WIDTH_CM) / 2) * ((ROBOT_WIDTH_CM) / 2))
-#  error "PIVOT_FRONT_RADIUS_CM is smaller than sqrt(SONAR_TO_AXLE_CM^2 + (ROBOT_WIDTH_CM/2)^2). Recompute it: the chassis sweeps further than the firmware thinks and a 180 will graze the wall."
-#endif
-
-// How close the FRONT sonar may read before a pivot grazes the wall. The wall
-// sits (reading + SONAR_TO_AXLE_CM) from the axle and the corner swings
-// PIVOT_FRONT_RADIUS_CM, so the corner clears by (reading - 2). At a reading
-// of 2 cm it exactly touches.
-#define PIVOT_FRONT_NEED_CM    (PIVOT_FRONT_RADIUS_CM - SONAR_TO_AXLE_CM)  // 2 cm
-
-// Distance at which Mode 10 calls the obstacle a dead end and stops.
-//
-// DELIBERATELY NOT FRONT_BLOCKED_CM (25). That constant is shared with the
-// junction classifier, where it has to be generous enough that a T-junction's
-// front wall registers as blocked BEFORE the two side openings appear -- see
-// section 9. Stopping a dead-end run 25 cm out is far earlier than the pivot
-// needs, but lowering the shared constant to fix that would break junction
-// detection everywhere. Hence a separate knob, read through
-// Sonar_FrontCloserThan() so it keeps the same vote-window robustness.
-//
-// TUNING: this is the distance the stop is TRIGGERED at, not where the
-// chassis ends up.
-//
-// MEASURED at 12: the chassis came to rest 3-4 cm from the wall on three runs.
-// That 8-9 cm total splits into two very different halves, and the log line
-// used to blame the wrong one:
-//
-//   ~6 cm  DETECTION LAG. Front pings are 60 ms apart and the vote needs 2 of
-//          them, so at the measured 40+ cm/s the front range falls ~6 cm
-//          between "first reading under the threshold" and "stop fires".
-//          Logs show Fraw 12 -> 9 -> 6 across those pings.
-//   ~2-3cm BRAKE COAST, from the stop command to standstill. The active brake
-//          is doing its job; this half is already small.
-//
-// So the threshold has to cover the lag as well as the coast. 20 puts the nose
-// at ~11 cm, clear of DEADEND_BACKUP_TRIGGER_CM so no reverse is needed at all
-// on a normal stop.
-#define DEADEND_STOP_CM        20
-
-// TWO-STAGE APPROACH -- this is what actually prevents hitting the wall, and
-// why DEADEND_STOP_CM no longer has to be guessed against an unknown coast.
-//
-// The first attempt drove at full DRIVE_BASE_PWM right up to DEADEND_STOP_CM
-// and then cut the motors. Coast distance at cruise is larger than the whole
-// stopping margin, so it hit the wall -- and no value of DEADEND_STOP_CM fixes
-// that reliably while the coast is unmeasured and speed-dependent.
-//
-// Instead: cruise until the obstacle is DEADEND_SLOW_CM away, then drop to
-// DEADEND_CREEP_PWM for the last stretch. Coast scales steeply with speed, so
-// creeping the final approach shrinks it to a couple of centimetres, and the
-// active brake in Drive_Stop() removes most of what is left. The stop then
-// lands where it was asked to regardless of what the cruise coast happens to
-// be.
-//
-// DEADEND_SLOW_CM must be comfortably larger than the CRUISE coast, since
-// that is the distance this transition has to happen within. It costs nothing
-// to be generous here -- the penalty is only a slower last 20 cm.
-// MEASURED FROM LOGS 1/3/4, not estimated. The creep only lasted ~0.5 s at 35
-// cm, which is not enough distance for the chassis to actually shed speed --
-// the front range closed at 41-46 cm/s during "creep", the same as cruise.
-// Starting it at 45 cm gives ~1.5 s for the deceleration to take effect.
-#define DEADEND_SLOW_CM        45
-
-// Raised 48 -> 52. At 48 the floor-preservation in tick_at() had almost
-// nothing to work with: MOTOR_MIN_PWM is 45, so any correction over 3 counts
-// pushed a wheel under the floor and BOTH were lifted, taking the mean back up
-// to 56-62 -- i.e. cruise speed. Logged effective means were 50.6 / 52.8 /
-// 56.2 against a nominal 48. At 52 there are 7 counts of headroom, and the
-// correction is clamped to that (see DRIVE_MEAN_PRESERVE_BELOW) so the mean
-// stays where it was asked to be.
-#define DEADEND_CREEP_PWM      52
-
-// Do not accept a dead-end stop while the chassis is yawing faster than this:
-// off-axis the front beam can be ranging a SIDE wall, and stopping on that
-// reading turns a normal corridor into a phantom dead end. Raw LSB, 65.5 per
-// deg/sec, so 650 ~= 10 deg/sec. A too-close front bypasses this entirely --
-// that is a real collision signal, not a beam artefact.
-#define DEADEND_STRAIGHT_LSB   650
-
-// ...but do not wait forever for a straight moment either. If the stop has
-// been wanted this long and the chassis still will not settle, take it anyway
-// and say so in the log: a delayed stop eventually becomes a collision.
-#define DEADEND_STRAIGHT_MAX_MS 700
-
-// Per-tick trace. One line is ~56 bytes; at CONTROL_TICK_MS=20 every tick
-// would be ~2800 byte/s against 3840 byte/s at 38400 baud, leaving nothing for
-// the event lines. 2 puts it near 36%. Watch the `drop` figure in the run
-// summary: if it is climbing, raise this.
-#define DEADEND_TRACE          1
-#define DEADEND_TRACE_EVERY    2
-
-// Free space the pivot needs on the side it rotates into, measured from the
-// chassis flank (which is ROBOT_WIDTH_CM/2 out from the pivot axis) -- i.e.
-// how much the side sonar must be reading for the front corner to clear.
-#define PIVOT_SIDE_NEED_CM     (PIVOT_FRONT_RADIUS_CM - (ROBOT_WIDTH_CM / 2))  // 9 cm
-
-// Only commit to a side when the two walls differ by at least this much. Below
-// it the readings are within sonar noise of each other and "nearer wall" is a
-// coin flip, so DEADEND_TIE_DIR is used instead of chasing the noise.
-#define DEADEND_DECIDE_MARGIN_CM 3
-#define DEADEND_TIE_DIR          TURN_RIGHT
-
-// Drive_Stop() has no active brake: the chassis coasts after the motors cut,
-// so where it STOPS is closer to the wall than where it DECIDED to stop. The
-// direction rule fixes the lateral clearance problem but does nothing for the
-// front one, so when the coast leaves the nose against the wall the run backs
-// up to buy the front corners room. Timed, because there are no encoders.
-//
-// CONDITIONAL: the reverse only runs when the post-coast front reading is
-// below DEADEND_BACKUP_TRIGGER_CM (or the front reads too-close to measure).
-// Above that there is already room and reversing is wasted travel that just
-// puts the chassis somewhere else in the corridor. Set the trigger to 0 to
-// disable the reverse entirely, or to a large number to force it every run.
-//
-// The default leaves (8 - PIVOT_FRONT_NEED_CM) = 6 cm of margin over the
-// reading at which a front corner exactly grazes the wall.
-#define DEADEND_BACKUP_TRIGGER_CM 8
-#define DEADEND_BACKUP_PWM     90
-
-// The reverse is CLOSED-LOOP now: it backs off until the front sensor reads
-// DEADEND_BACKUP_TARGET_CM, watching as it goes, instead of running a fixed
-// time and hoping.
-//
-// WHY: the fixed 400 ms pulse moved the chassis a MEASURED 20-22 cm on all
-// three runs that used it (front went 3 -> 24, 3 -> 25, 4 -> 24 cm). That is
-// ~52 cm/s in reverse, against a pivot that only needs about 6 cm of room --
-// so it threw away most of a corridor width every time, and in a real maze
-// would reverse straight into whatever was behind it. No fixed duration is
-// safe here when the speed is this poorly known; the sensor already knows the
-// answer, so use it.
-//
-// DEADEND_BACKUP_MAX_MS only bounds the loop if the sensor never reports the
-// target (a wall behind, a dead sensor). At the measured reverse speed it
-// corresponds to ~15 cm, so it cannot run away.
-#define DEADEND_BACKUP_TARGET_CM 12
-#define DEADEND_BACKUP_MAX_MS    300
-
-// Ceiling on the approach so a mode-10 run in open space ends rather than
-// driving off forever.
-#define DEADEND_APPROACH_MAX_MS 20000UL
-
-// ---------------------------------------------------------------------------
-//  15c. SUPPLY MONITORING AND RESET SAFETY
+//  15. SUPPLY MONITORING
 // ---------------------------------------------------------------------------
 // Nominal internal bandgap, millivolts. Datasheet says 1.22 V typical with a
 // 1.15-1.35 V spread, so the ABSOLUTE voltage this yields can be ~10% out.
@@ -972,29 +651,8 @@
 // under this is a real fault, not a preference.
 #define POWER_MIN_SAFE_MV      4500
 
-// How often to sample the rail. Every control tick is fine -- a conversion is
-// ~0.1 ms at 125 kHz -- and sampling often is the point: the dip that resets
-// the MCU lasts a few milliseconds, so a slow sampler simply never sees it.
-#define POWER_SAMPLE_EVERY     1
-
-// REFUSE TO AUTO-RESTART AFTER A RESET THAT INTERRUPTED A RUN.
-//
-// This is the fix for "after the reset, the rest of the behaviour was just
-// undefined". A reset does not put the robot back at the start line: it leaves
-// the chassis somewhere unknown in the maze, at an unknown heading, possibly
-// still coasting. Restarting the mode from scratch then drives blind from that
-// unknown pose -- and worse, Gyro_CalibrateFull() runs while the chassis may
-// still be moving, which poisons the gyro zero for the whole next run.
-//
-// With this set, a boot that finds the previous boot died mid-motion (its
-// .noinit run-state flag still says MOVING, and SRAM survived so that flag is
-// trustworthy) halts with the motors off and says so, instead of setting off
-// again. Cycling the power for a few seconds clears SRAM and gives a normal
-// cold start, so recovery is deliberate rather than automatic.
-#define HALT_ON_UNSAFE_RESTART 1
-
 // ---------------------------------------------------------------------------
-//  16. DEBUG
+//  16. DEBUG / USART
 // ---------------------------------------------------------------------------
 #define DEBUG_ENABLED          1
 
@@ -1013,7 +671,6 @@
 // Telemetry verbosity:
 //   0 = events only (turns, junctions, faults)
 //   1 = compact CSV control-loop trace  <-- use this for tuning
-//   2 = CSV plus per-tick timing/health counters
 #define DEBUG_LEVEL            1
 
 // Warn when a control tick overruns its deadline. A sonar timeout plus a
@@ -1021,7 +678,7 @@
 #define TICK_OVERRUN_WARN_MS   (CONTROL_TICK_MS + 5)
 
 // ---------------------------------------------------------------------------
-//  17. WALL-FOLLOWER WITH MEMORY  (MODE=wallmem)
+//  17. WALL-FOLLOWER MEMORY
 // ---------------------------------------------------------------------------
 // Run 1 explores with a strict left-hand rule and logs one byte per decision.
 // Run 2 replays the collapsed string. See wallmem.h for the record layout and
@@ -1034,12 +691,12 @@
 #define WALLMEM_MAX_RECORDS    48
 
 // Byte offset of the saved route inside the ATmega32's 1024-byte EEPROM.
-// Nothing else in this project uses EEPROM, so the base is arbitrary; it is
+// Nothing else in this firmware uses EEPROM, so the base is arbitrary; it is
 // named rather than literal so a second user can be added without a hunt.
 #define WALLMEM_EE_BASE        0x0010
 
 // 1 = ignore any saved route and explore again on every power-up.
-// Set this to 1 to re-run the explore leg without erasing EEPROM by hand.
+// Holding the button for BUTTON_LONG_PRESS_MS does the same without a rebuild.
 #define WALLMEM_FORCE_EXPLORE  0
 
 // What run 2 does when a junction does not match the stored signature.
@@ -1048,9 +705,5 @@
 // 0 is the default deliberately: a degraded run that still finishes is more
 // useful on the day than a robot standing still in the middle of the maze.
 #define WALLMEM_HALT_ON_MISMATCH 0
-
-// Consecutive confirmations that the way out really is the way out. Reuses the
-// same evidence as the maze solver's exit test, at the same confidence.
-#define WALLMEM_EXIT_CONFIRM   OPENING_CONFIRM
 
 #endif // CONFIG_H

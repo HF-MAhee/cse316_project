@@ -1,6 +1,6 @@
 #include "config.h"
 #include <avr/io.h>
-#include "mode.h"
+#include "solver.h"
 #include "telemetry.h"
 #include "timer.h"
 #include "heading.h"
@@ -13,17 +13,16 @@
 #include "debug.h"
 
 // ============================================================================
-//  Build mode: WALL FOLLOWER WITH MEMORY.
+//  THE TWO-RUN SOLVER: wall follower with memory.
 //
 //  RUN 1 (explore)  left-hand rule, L > F > R > U. One byte logged per
 //                   decision point. On reaching the exit the log is collapsed
 //                   -- every dead-end excursion folds into the single turn it
 //                   was equivalent to -- and the result is written to EEPROM.
 //
-//  RUN 2 (speed)    power the robot up again in the same start cell facing the
-//                   same way. The saved route is loaded and replayed. Every
-//                   junction is checked against the signature that was stored
-//                   for it before its turn is acted on.
+//  RUN 2 (speed)    the collapsed route is replayed. Every junction is checked
+//                   against the signature stored for it before its turn is
+//                   acted on.
 //
 //  BOTH RUNS HAPPEN IN ONE POWER-UP, gated by the panel button:
 //
@@ -36,12 +35,12 @@
 //  So the sequence on the day is: press, watch it explore, wait for the LED to
 //  come on, carry the robot back to the start cell, press again.
 //
-//  The route is still written to EEPROM at the end of run 1, so a power cycle
-//  between the runs also works -- the robot comes back up with the LED already
+//  The route is also written to EEPROM at the end of run 1, so a power cycle
+//  between the runs works too -- the robot comes back up with the LED already
 //  on, waiting for the button. That matters on this chassis, where the power
 //  cycle is sometimes not the operator's choice.
 //
-//  To explore again: set WALLMEM_FORCE_EXPLORE to 1 in config.h and rebuild.
+//  To explore again: hold the button 2 s, or set WALLMEM_FORCE_EXPLORE to 1.
 // ============================================================================
 
 typedef enum {
@@ -125,14 +124,14 @@ static turn_dir_t pick_180_dir(void) {
     uint8_t  r_ok = Sonar_IsValid(SONAR_RIGHT);
 
     if (l_ok && r_ok) {
-        if (l_cm > r_cm && (uint16_t)(l_cm - r_cm) >= DEADEND_DECIDE_MARGIN_CM) return TURN_LEFT;
-        if (r_cm > l_cm && (uint16_t)(r_cm - l_cm) >= DEADEND_DECIDE_MARGIN_CM) return TURN_RIGHT;
+        if (l_cm > r_cm && (uint16_t)(l_cm - r_cm) >= UTURN_DECIDE_MARGIN_CM) return TURN_LEFT;
+        if (r_cm > l_cm && (uint16_t)(r_cm - l_cm) >= UTURN_DECIDE_MARGIN_CM) return TURN_RIGHT;
     } else if (l_ok) {
         return TURN_RIGHT;      // only the left wall is visible -- turn away
     } else if (r_ok) {
         return TURN_LEFT;
     }
-    return DEADEND_TIE_DIR;
+    return UTURN_TIE_DIR;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,10 +239,14 @@ static void report_run(void) {
 // ===========================================================================
 //  Entry points
 // ===========================================================================
-void Mode_PreGyro(void) { }
-
-void Mode_Header(void) {
-    Debug_P("\r\n=== MODE wallmem: wall follower with memory ===\r\n");
+void Solver_Init(void) {
+    Debug_P("\r\n=== two-run maze solver: wall follower with memory ===\r\n");
+    // The debug TX ring is DEBUG_TX_BUF (192) bytes and DROPS on overflow
+    // rather than blocking. This banner plus the run-selection lines below is
+    // just over that, so without a flush here the tail of the start-up text --
+    // the placement instruction -- is the part that silently disappears. This
+    // is start-up, before any timing matters, so blocking costs nothing.
+    Debug_Flush();
 
     WallMem_Reset();
 
@@ -268,7 +271,7 @@ void Mode_Header(void) {
     Telemetry_Header();
 }
 
-void Mode_Begin(void) {
+void Solver_Begin(void) {
     clear_debounce();
     s_leg_started = millis();
     s_run_started = millis();
@@ -278,7 +281,7 @@ void Mode_Begin(void) {
     arm();
 }
 
-void Mode_Tick(const tick_ctx_t *t) {
+void Solver_Tick(const tick_ctx_t *t) {
     int16_t rate = t->rate;
     uint8_t f, l, r;
 
@@ -564,4 +567,4 @@ void Mode_Tick(const tick_ctx_t *t) {
     }
 }
 
-void Mode_Telemetry(const tick_ctx_t *t) { Telemetry_Tick(t); }
+uint8_t Solver_State(void) { return (uint8_t)s_state; }

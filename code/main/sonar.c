@@ -38,13 +38,6 @@ static uint8_t s_turn = 0;
 static uint16_t s_front_dist[FRONT_VOTE_WINDOW];
 static uint8_t  s_front_vi = 0;
 
-// How many front pings the plausibility gate has thrown away. A ping it
-// discards cannot vote, so each one delays an obstacle stop by a full 60 ms
-// front refresh. If this climbs during an approach, the front sensor is being
-// walked off the target (usually by yaw) and detection is running late --
-// which is the difference between stopping short of a wall and hitting it.
-static uint16_t s_front_gated = 0;
-
 // How many of the last FRONT_VOTE_WINDOW front pings saw something closer
 // than cm.
 static uint8_t front_votes_below(uint16_t cm) {
@@ -197,9 +190,6 @@ void Sonar_Task(void) {
         uint16_t d = (p->too_close) ? 0
                    : ((!implausible_jump && v != SONAR_NO_ECHO) ? v
                                                                 : SONAR_NO_ECHO);
-        if (implausible_jump && !p->too_close && s_front_gated < 0xFFFF) {
-            s_front_gated++;
-        }
         s_front_dist[s_front_vi] = d;
         s_front_vi = (uint8_t)((s_front_vi + 1) % FRONT_VOTE_WINDOW);
     }
@@ -257,12 +247,6 @@ uint8_t Sonar_FrontBlocked(void) {
 uint8_t Sonar_FrontVotes(void) {
     return front_votes_below(FRONT_BLOCKED_CM);
 }
-
-uint8_t Sonar_FrontVotesBelow(uint16_t cm) {
-    return front_votes_below(cm);
-}
-
-uint16_t Sonar_FrontGatedCount(void) { return s_front_gated; }
 
 void Sonar_Flush(void) {
     uint8_t i, k;

@@ -38,13 +38,6 @@ const drive_debug_t *Drive_Debug(void);
 void          Drive_Begin(void);            // kickstart + reset controller
 void          Drive_Tick(int16_t gyro_rate);// one control step at DRIVE_BASE_PWM
 
-// Same control step at a caller-chosen base speed, for an approach that has to
-// slow down before stopping. The steering differential is a RATIO of the base
-// (WALL_MAX_CORRECTION_RATIO_PCT), so a slower base also steers more gently
-// instead of pivoting on the spot. Clamped up to MOTOR_MIN_PWM -- below the
-// stall floor the wheels stop rather than creep.
-void          Drive_TickAt(uint8_t base_pwm, int16_t gyro_rate);
-
 // Stops the chassis AND brakes it: a DRIVE_BRAKE_MS reverse pulse before the
 // motors are released, because an unbraked coast was measured at ~17 cm and
 // that is enough to put the nose into a wall the controller correctly decided
@@ -53,31 +46,6 @@ void          Drive_TickAt(uint8_t base_pwm, int16_t gyro_rate);
 // make this tick. Set DRIVE_BRAKE_MS to 0 to go back to a bare coast.
 void          Drive_Stop(void);
 
-// BLOCKING straight drive for a fixed duration, held on the gyro alone (no
-// sonar). This is the original firmware's straight-line autocorrect: P on
-// accumulated heading error plus D on rate, so the chassis returns to the
-// heading it started on instead of merely resisting rotation. Includes the
-// breakaway kick, and integrates throughout so no rotation goes uncounted.
-//
-// start_offset_raw is where the chassis ALREADY sits relative to the heading
-// it should hold, in raw LSB*ms, positive = rotated LEFT of it. Feed a turn's
-// turn_result_t.residual_raw in here and the leg steers that leftover out,
-// instead of every turn's error accumulating into the next leg.
-//
-// Returns the leg's NET heading change in raw LSB*ms (+ = net rotation left),
-// so a caller running several legs and turns can account for the total
-// rotation over the whole path -- a closed square must come to -360 degrees.
-int32_t       Drive_StraightHold(uint8_t pwm, uint32_t ms, int32_t start_offset_raw);
-
-// Same controller, but it services the sonar and stops as soon as the FRONT
-// sensor reports a debounced obstacle, giving up after max_ms. Sets
-// *blocked_out to 1 if it stopped on an obstacle, 0 if it timed out -- the
-// caller must check, because "drove the whole way with nothing ahead" and
-// "found a wall" need very different follow-up. Returns the net heading change
-// like Drive_StraightHold().
-int32_t       Drive_StraightUntilBlocked(uint8_t pwm, uint32_t max_ms,
-                                         int32_t start_offset_raw,
-                                         uint8_t *blocked_out);
 center_mode_t Drive_Mode(void);
 int16_t       Drive_LastCorrection(void);
 #endif

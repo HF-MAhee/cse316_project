@@ -12,25 +12,15 @@
 #include "power.h"
 #include "resetlog.h"
 #include "panel.h"
-#include "mode.h"
+#include "solver.h"
+#include "telemetry.h"
 
 // ============================================================================
 //  THE RUNNER.
 //
-//  This file used to hold every build mode behind a #if chain, and had grown
-//  past 1400 lines: adding a mode meant editing four separate conditionals in
-//  three functions, and a mode's helpers sat hundreds of lines from the code
-//  that called them. Modes now live one-per-file under modes/, and the Makefile
-//  compiles exactly one of them:
-//
-//      make MODE=maze             build the full solver
-//      make MODE=deadend flash    build the dead-end run and flash it
-//      make list-modes            show every mode with a one-line description
-//
-//  What is left here is only the part that is the same for every mode: bring
-//  the hardware up in a safe order, report what the last reset did, calibrate,
-//  then run a fixed-rate control tick forever. Everything mode-specific reaches
-//  it through the five entry points in mode.h.
+//  Brings the hardware up in a safe order, reports what the last reset did,
+//  calibrates the gyro, then runs a fixed-rate control tick forever. All maze
+//  behaviour lives in solver.c; this file only sequences it.
 // ============================================================================
 
 int main(void) {
@@ -42,9 +32,9 @@ int main(void) {
     // A reset does NOT stop the motors. It makes every port pin a high-Z input,
     // so the L298N's direction inputs float and its last commanded state can
     // persist: the chassis keeps driving, or keeps pivoting, until firmware
-    // takes the pins back. That is the "kept rotating after the turn" and "kept
-    // rotating 360" symptom in the Mode 10 logs -- the MCU browned out mid-
-    // pivot and the motors simply carried on.
+    // takes the pins back. That is the "kept rotating after the turn" symptom
+    // seen in the early dead-end logs -- the MCU browned out mid-pivot and the
+    // motors simply carried on.
     //
     // Nothing here depends on any other subsystem, so it costs nothing to make
     // it the first thing that happens.
@@ -63,12 +53,7 @@ int main(void) {
     Power_Init();
     sei();
 
-    // The MODE the image was built with, straight from the Makefile. This used
-    // to say "AGV maze solver" whichever mode was flashed, which is worse than
-    // useless: flashing the wrong image is the single easiest mistake to make
-    // with this project, and the one line of output that could have caught it
-    // was claiming to be something else. Now the first line names the truth.
-    Debug_P("\r\n=== AGV firmware -- MODE=" BUILD_MODE_NAME " ===\r\n");
+    Debug_P("\r\n=== AGV maze solver ===\r\n");
     ResetLog_Report();
 
     // Idle rail reading, taken before anything draws current. This is the
@@ -77,52 +62,6 @@ int main(void) {
     Debug_KVF("VCC idle mV", (int32_t)Power_VccMv());
     Debug_P(" (bandgap-derived: trust the CHANGE, not the absolute)\r\n");
     Debug_Flush();
-
-    // Before MPU6050_Init() AND before the unsafe-restart gate below, both on
-    // purpose.
-    //
-    // Before MPU6050_Init() because a mode that diagnoses a dead I2C bus has to
-    // run before anything that would hang on it.
-    //
-    // Before the gate because every mode that uses this hook is a DIAGNOSTIC
-    // that never drives -- MODE=gyrodiag and MODE=panel both take over here and
-    // never return. The gate exists to stop the chassis driving from an unknown
-    // pose, which is not something a bench test of the LED and button can do;
-    // blocking them would mean a brown-out during a previous run makes the
-    // button test look broken, when the button is fine. Motors_Stop() has
-    // already run, so nothing can move either way.
-    //
-    // Every driving mode leaves this empty, returns immediately, and still
-    // meets the gate below untouched.
-    Mode_PreGyro();
-
-#if HALT_ON_UNSAFE_RESTART
-    if (ResetLog_UnsafeRestart()) {
-        // Refuse to drive. See HALT_ON_UNSAFE_RESTART in config.h -- carrying
-        // on from an unknown pose is what turned one brown-out into a whole run
-        // of undefined behaviour.
-        Motors_Stop();
-        Debug_P("*** HALTED: will not restart a run that was interrupted"
-                " mid-motion.\r\n");
-        Debug_P("    The robot is not where the firmware would assume, so"
-                " driving\r\n");
-        Debug_P("    on would be guesswork. Fix the supply (this was a"
-                " brown-out),\r\n");
-        Debug_P("    then CYCLE THE POWER for a few seconds -- that clears"
-                " SRAM and\r\n");
-        Debug_P("    gives a clean cold start. Set HALT_ON_UNSAFE_RESTART to 0"
-                "\r\n");
-        Debug_P("    to override, but expect undefined behaviour if you do."
-                "\r\n");
-        Debug_Flush();
-        // Blink it out too. A halted robot and a flat battery look identical
-        // from across the room, and the serial cable is usually not attached
-        // at the moment this fires.
-        Panel_SetLed(LED_BLINK_FAST);
-        for (;;) { Motors_Stop(); Panel_Task(); }
-    }
-#endif
-
 
     MPU6050_Init();
     Debug_P("calibrating gyro, hold still...\r\n");
@@ -145,14 +84,12 @@ int main(void) {
     Debug_KVF("offY", Gyro_GetOffsetY());
     Debug_NL();
 
-    Mode_Header();
+    Solver_Init();
 
     next_tick = millis();
     run_start = millis();
 
-    // A mode that owns its whole run does its work in here and never comes
-    // back; one that runs on the control loop returns immediately.
-    Mode_Begin();
+    Solver_Begin();
 
     for (;;) {
         gyro_xyz_t g;
@@ -192,7 +129,7 @@ int main(void) {
         ctx.overruns  = overruns;
 
         // ---- behaviour ---------------------------------------------------
-        Mode_Tick(&ctx);
+        Solver_Tick(&ctx);
 
         // Measure how long the tick's real work took. If this exceeds the
         // budget the control loop is no longer running at a fixed rate, which
@@ -202,9 +139,9 @@ int main(void) {
         }
         ctx.overruns = overruns;
 
-        // Reporting, after the deadline measurement -- same position this had
-        // when it was a telemetry() call in this function.
-        Mode_Telemetry(&ctx);
+        // Reporting, after the deadline measurement, so turning the trace up
+        // cannot itself manufacture overruns.
+        Telemetry_Tick(&ctx);
 
         // ---- global safety ----------------------------------------------
         if ((millis() - run_start) > MAX_RUN_MS) {

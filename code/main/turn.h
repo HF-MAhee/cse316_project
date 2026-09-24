@@ -37,7 +37,7 @@ typedef struct {
     uint8_t wrong_way;
 
     // How long after the motors cut the chassis was STILL rotating faster
-    // than TURNDBG_STILL_LSB, measured during the phase-4 settle, in ms.
+    // than TURN_STILL_LSB, measured during the phase-4 settle, in ms.
     // If this lands at or near TURN_SETTLE_MS the settle is ending before the
     // chassis has stopped, so the closed-loop correction below it is reading a
     // heading that is still moving -- it nudges, coasts further, overshoots,
@@ -79,9 +79,4 @@ void Turn_90(turn_dir_t dir, turn_result_t *res);
 // rotates into. In a dead end, pick the direction AWAY from the nearer wall.
 void Turn_180(turn_dir_t dir, turn_result_t *res);
 
-// Stream one line per gyro sample (decimated by TURNDBG_SAMPLE_EVERY) for the
-// duration of every subsequent turn: "S,<ms since turn start>,<raw rate>,
-// <hdg10>". Off by default -- only the turn-debug build mode switches it on,
-// so normal runs are unaffected.
-void Turn_SampleTrace(uint8_t on);
 #endif

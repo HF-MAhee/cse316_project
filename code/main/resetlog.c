@@ -22,26 +22,6 @@ static uint16_t s_boot_magic  __attribute__((section(".noinit")));
 static uint16_t s_boot_count  __attribute__((section(".noinit")));
 static uint8_t  s_prev_flags  __attribute__((section(".noinit")));
 
-// Was the robot MOVING when the last reset hit?
-//
-// This is the difference between "restarted cleanly" and the reported symptom
-// that everything after an unexpected reset was undefined. A reset does not
-// return the robot to the start line -- it leaves it at an unknown position and
-// heading, maybe still coasting -- so re-running the mode from scratch drives
-// blind from a pose the firmware has no idea about. Worse, the startup gyro
-// calibration then runs on a chassis that may still be rotating, which poisons
-// the heading zero for the entire next run.
-//
-// Kept in .noinit so it survives the reset. Only trustworthy when the boot
-// magic also survived; a real power cycle wipes both and reads as a cold start.
-#define RUN_IDLE   0x00
-#define RUN_MOVING 0x5A            // distinctive, so uninitialised RAM is
-                                   // unlikely to imitate it
-static uint8_t  s_run_state   __attribute__((section(".noinit")));
-
-// Set once report_reset_cause() has decided the previous boot died mid-motion.
-static uint8_t  s_unsafe_restart = 0;
-
 void ResetLog_Report(void) {
     uint8_t f = MCUCSR;
     uint8_t ram_survived;
@@ -50,14 +30,10 @@ void ResetLog_Report(void) {
     ram_survived = (s_boot_magic == BOOT_MAGIC) ? 1 : 0;
     if (ram_survived) {
         s_boot_count++;
-        // The run-state flag is only meaningful when SRAM held, because that is
-        // the only case where the previous boot actually wrote it.
-        if (s_run_state == RUN_MOVING) s_unsafe_restart = 1;
     } else {
         s_boot_magic = BOOT_MAGIC;
         s_boot_count = 1;
         s_prev_flags = 0;
-        s_run_state  = RUN_IDLE;     // cold start: nothing was in progress
     }
 
     Debug_P("RESET:");
@@ -89,12 +65,6 @@ void ResetLog_Report(void) {
         }
         Debug_KVF("  previous boot's flags", (int32_t)s_prev_flags);
         Debug_NL();
-        if (s_unsafe_restart) {
-            Debug_P("  *** AND THE ROBOT WAS MOVING WHEN IT HAPPENED ***\r\n");
-            Debug_P("  So its position and heading are now unknown, and it may\r\n");
-            Debug_P("  still have been coasting through the gyro calibration.\r\n");
-            Debug_P("  There is no safe way to carry on from here.\r\n");
-        }
         Debug_NL();
     } else {
         Debug_P("  *** SRAM WAS WIPED -> VCC actually fell to near zero ***\r\n");
@@ -151,6 +121,3 @@ void ResetLog_Report(void) {
     Debug_Flush();
     s_prev_flags = f;
 }
-uint8_t ResetLog_UnsafeRestart(void) { return s_unsafe_restart; }
-void    ResetLog_MarkMoving(void)    { s_run_state = RUN_MOVING; }
-void    ResetLog_MarkIdle(void)      { s_run_state = RUN_IDLE; }

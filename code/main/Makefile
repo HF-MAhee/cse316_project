@@ -4,51 +4,28 @@ CC      = avr-gcc
 OBJCOPY = avr-objcopy
 
 # ---------------------------------------------------------------------------
-#  BUILD MODE SELECTION
+#  The two-run maze solver. One image, no build modes:
 #
-#  Exactly one file from modes/ is compiled into the image. Pick it here or on
-#  the command line:
-#
-#      make                      build the default mode below
-#      make MODE=deadend         build modes/mode_deadend.c
-#      make MODE=turndbg flash   build that mode and flash it
-#      make list-modes           show every mode with what it does
-#
-#  This replaced a #define BUILD_MODE in main.c, which meant editing a source
-#  file to change what you were flashing -- easy to forget, and invisible in
-#  the build output. The mode now appears in `make` output and in the .elf name
-#  is checked below, so flashing the wrong image is much harder to do silently.
+#      make            build it
+#      make flash      build it and flash it (USBasp)
+#      make test       host-side unit tests -- no hardware needed
+#      make boot-test  boot the real image in the simavr simulator
 # ---------------------------------------------------------------------------
-MODE ?= maze
 
-MODE_SRC = modes/mode_$(MODE).c
-ifeq ($(wildcard $(MODE_SRC)),)
-$(error Unknown MODE '$(MODE)'. Run 'make list-modes' to see the options)
-endif
-
-# -MMD -MP generate a .d file of header dependencies per object. Without them
-# editing config.h rebuilt NOTHING -- every tunable in the project lives in that
-# one header, so a "rebuilt" image could silently keep old constants. That is the
-# stale-.o trap the project notes warn about; this closes it properly so
-# `make clean` is no longer required after every header edit.
+# -MMD -MP generate a .d file of header dependencies per object, so editing
+# config.h rebuilds everything that reads it. Every tunable lives in that one
+# header; without this a "rebuilt" image could silently keep old constants.
 CFLAGS  = -mmcu=$(MCU) -DF_CPU=$(F_CPU) -Os -std=gnu99 -Wall -Wextra \
           -funsigned-char -funsigned-bitfields -ffunction-sections -fdata-sections \
-          -I. -MMD -MP -DBUILD_MODE_NAME='"$(MODE)"'
+          -I. -MMD -MP
 LDFLAGS = -mmcu=$(MCU) -Wl,--gc-sections
 
-# Everything here is mode-independent: drivers, control, and the runner.
-CORE = main.c timer.c i2c.c mpu6050.c heading.c motors.c sonar.c drive.c \
-       turn.c maze.c debug.c gyrodiag.c power.c resetlog.c telemetry.c \
-       wallmem.c panel.c
-
-SRC = $(CORE) $(MODE_SRC)
+SRC = main.c solver.c wallmem.c drive.c turn.c heading.c sonar.c motors.c \
+      mpu6050.c i2c.c timer.c panel.c power.c resetlog.c telemetry.c debug.c
 OBJ = $(SRC:.c=.o)
 TARGET = agv
 
-all: banner $(TARGET).hex size
-
-banner:
-	@echo "=== building MODE=$(MODE)  ($(MODE_SRC)) ==="
+all: $(TARGET).hex size
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -64,101 +41,44 @@ $(TARGET).hex: $(TARGET).elf
 size: $(TARGET).elf
 	@avr-size --format=avr --mcu=$(MCU) $(TARGET).elf
 
-# Re-state the mode at flash time too. The most expensive mistake with this
-# project is flashing a mode you did not mean to and reading the resulting
-# behaviour as a bug.
 flash: $(TARGET).hex
-	@echo "=== flashing MODE=$(MODE) ==="
 	avrdude -c usbasp -p m32 -U flash:w:$(TARGET).hex
-
-list-modes:
-	@echo "Available modes (make MODE=<name>):"
-	@echo "  sonar       sonar telemetry only, motors never move"
-	@echo "  corridor    wall centring in a straight corridor"
-	@echo "  turn        one 90 degree pivot, then halt"
-	@echo "  maze        the full maze solver            [default]"
-	@echo "  cone        sonar cone test, rotate by hand, motors off"
-	@echo "  square      four timed legs + four turns, no corridor"
-	@echo "  turndbg     repeated pivots with the full yaw-rate profile"
-	@echo "  avoid       corridor drive -> obstacle -> right turn -> leg"
-	@echo "  gyrodiag    gyro / I2C connection diagnostic, runs on a cold bus"
-	@echo "  openavoid   open-space obstacle avoidance, no corridor"
-	@echo "  deadend     dead-end 180, direction chosen from the nearer wall"
-	@echo "  panel       LED + button test: press to blink, press again to stop"
-	@echo "  wallmem     wall follower WITH MEMORY: explore, then replay the"
-	@echo "              collapsed route (two separate power-ups, EEPROM)"
-
-# Build every mode in turn. Catches the failure modularisation invites: a mode
-# that stops compiling because a header it relied on is now only included
-# somewhere else.
-check-all:
-	@fail=0; \
-	for m in sonar corridor turn maze cone square turndbg avoid gyrodiag openavoid deadend wallmem panel; do \
-	  $(MAKE) --no-print-directory clean >/dev/null; \
-	  if $(MAKE) --no-print-directory MODE=$$m >/tmp/mk.$$m.log 2>&1; then \
-	    printf "  %-11s %s\n" "$$m" "$$(grep Program /tmp/mk.$$m.log | awk '{print $$2" flash, "}')$$(grep Data /tmp/mk.$$m.log | awk '{print $$2" ram"}')"; \
-	  else \
-	    printf "  %-11s BUILD FAILED\n" "$$m"; grep -m3 -E 'error|undefined' /tmp/mk.$$m.log; fail=1; \
-	  fi; \
-	done; \
-	$(MAKE) --no-print-directory clean >/dev/null; \
-	if [ $$fail -ne 0 ]; then echo "check-all: FAILED"; exit 1; fi; \
-	echo "check-all: all 13 modes build"
 
 # Host-side tests. Both compile the SAME source the firmware links against:
 # wallmem.c against a model of the demo maze (explore -> collapse -> replay),
 # and panel.c against shimmed pins and clock (debounce, short vs long press).
-# Neither needs hardware, so there is no excuse for not running them before a
-# flash -- a button that double-fires costs a lab session to find on the bench.
 test:
 	@cc -I. -Wall -Wextra -O1 -o /tmp/test_wallmem test/test_wallmem.c wallmem.c
 	@/tmp/test_wallmem
 	@cc -I. -Wall -Wextra -O1 -std=gnu99 -o /tmp/test_panel test/test_panel.c panel.c
 	@/tmp/test_panel
 
-# Boot every mode in the simavr simulator and check it gets as far as printing
-# its banner. This is the check that was missing when Power_Init() hung every
-# build at boot for ten days: everything compiled, every host test passed, and
-# not one byte ever left the chip. Compiling proves nothing about whether main()
-# reaches its first line of output; running it does.
+# Boot the real image in simavr and check it gets as far as arming for run 1,
+# and that no start-up text was lost to the 192-byte debug TX ring overflowing.
+# This is the check that was missing when Power_Init() hung every build at
+# boot: everything compiled, every host test passed, and not one byte ever
+# left the chip. Compiling proves nothing about whether main() reaches its
+# first line of output; running it does.
 #
 # Needs simavr (Linux: apt install simavr, macOS: brew install simavr). Skips
 # cleanly without it rather than failing, since it is not part of the build.
-BOOT_MODES = sonar corridor turn maze cone square turndbg avoid gyrodiag openavoid deadend wallmem panel
-boot-test:
+boot-test: $(TARGET).elf
 	@command -v simavr >/dev/null 2>&1 || { echo "boot-test: simavr not installed, skipping"; exit 0; }; \
-	fail=0; \
-	for m in $(BOOT_MODES); do \
-	  $(MAKE) --no-print-directory clean >/dev/null; \
-	  $(MAKE) --no-print-directory MODE=$$m >/dev/null 2>&1 || { printf "  %-10s BUILD FAILED\n" $$m; fail=1; continue; }; \
-	  timeout 6 simavr -m $(MCU) -f 16000000 $(TARGET).elf > /tmp/boot.$$m.log 2>&1; \
-	  if grep -q "=== AGV firmware -- MODE=$$m ===" /tmp/boot.$$m.log; then \
-	    printf "  %-10s boots, banner printed\n" $$m; \
-	  else \
-	    printf "  %-10s DID NOT REACH ITS BANNER -- hung at boot\n" $$m; fail=1; \
-	  fi; \
-	done; \
-	$(MAKE) --no-print-directory clean >/dev/null; \
-	if [ $$fail -ne 0 ]; then echo "boot-test: FAILED"; exit 1; fi; \
-	echo "boot-test: every mode boots"
-
-# Standalone LED check. Depends on NOTHING in this project -- not config.h, not
-# the timer, not the USART. If this blinks and MODE=panel does not, the hardware
-# is fine and the fault is in the firmware; if this does not blink, stop reading
-# code and check the LED, the resistor, the pin and the power.
-blink:
-	$(CC) -mmcu=$(MCU) -DF_CPU=$(F_CPU) -Os -Wall -Wextra \
-	      -o blink_pb0.elf test/blink_pb0.c
-	$(OBJCOPY) -O ihex -R .eeprom blink_pb0.elf blink_pb0.hex
-	@avr-size --format=avr --mcu=$(MCU) blink_pb0.elf | grep -E "Program|Data"
-
-blink-flash: blink
-	@echo "=== flashing the standalone PB0 blink test ==="
-	avrdude -c usbasp -p m32 -U flash:w:blink_pb0.hex
+	timeout 8 simavr -m $(MCU) -f 16000000 $(TARGET).elf > /tmp/boot.log 2>&1; \
+	if ! grep -q "READY FOR RUN 1" /tmp/boot.log; then \
+	  echo "boot-test: FAILED -- did not reach READY FOR RUN 1. Last output:"; \
+	  sed 's/\x1b\[[0-9;]*m//g' /tmp/boot.log | tail -8; exit 1; \
+	fi; \
+	drop=$$(sed 's/\x1b\[[0-9;]*m//g; s/\.\.$$//' /tmp/boot.log | grep -m1 '^0,' | awk -F, '{print $$NF}'); \
+	if [ "$$drop" != "0" ]; then \
+	  echo "boot-test: FAILED -- $$drop debug bytes dropped during start-up (TX buffer overflow: add a Debug_Flush)"; \
+	  exit 1; \
+	fi; \
+	echo "boot-test: boots, calibrates, arms for run 1, no debug bytes dropped"
 
 clean:
-	rm -f *.o *.d modes/*.o modes/*.d *.elf *.hex
+	rm -f *.o *.d *.elf *.hex
 
 -include $(OBJ:.o=.d)
 
-.PHONY: all banner size flash clean list-modes check-all test blink blink-flash boot-test
+.PHONY: all size flash test boot-test clean
