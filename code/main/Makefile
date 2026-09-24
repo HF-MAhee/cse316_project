@@ -116,9 +116,23 @@ test:
 	@cc -I. -Wall -Wextra -O1 -std=gnu99 -o /tmp/test_panel test/test_panel.c panel.c
 	@/tmp/test_panel
 
+# Standalone LED check. Depends on NOTHING in this project -- not config.h, not
+# the timer, not the USART. If this blinks and MODE=panel does not, the hardware
+# is fine and the fault is in the firmware; if this does not blink, stop reading
+# code and check the LED, the resistor, the pin and the power.
+blink:
+	$(CC) -mmcu=$(MCU) -DF_CPU=$(F_CPU) -Os -Wall -Wextra \
+	      -o blink_pb0.elf test/blink_pb0.c
+	$(OBJCOPY) -O ihex -R .eeprom blink_pb0.elf blink_pb0.hex
+	@avr-size --format=avr --mcu=$(MCU) blink_pb0.elf | grep -E "Program|Data"
+
+blink-flash: blink
+	@echo "=== flashing the standalone PB0 blink test ==="
+	avrdude -c usbasp -p m32 -U flash:w:blink_pb0.hex
+
 clean:
 	rm -f *.o *.d modes/*.o modes/*.d *.elf *.hex
 
 -include $(OBJ:.o=.d)
 
-.PHONY: all banner size flash clean list-modes check-all test
+.PHONY: all banner size flash clean list-modes check-all test blink blink-flash
