@@ -572,38 +572,32 @@
 // within a nudge or two, and the loop corrects an overshoot just as well.
 #define TURN_STOP_MARGIN_DEG   28
 
-// HOW CLOSE IS "90". Was 2 degrees, and it was the error that accumulated:
-// the nudges approach from below and stopped the moment they were inside it,
-// so the logged 90s ended at 88.1, 88.1, 88.9, 88.9, 89.0, 89.2 -- the SAME
-// sign every time, ~1.4 degrees a turn, and the left-hand rule turns the same
-// way over and over. The gyro measures the rotation to well under a tenth of
-// a degree once the chassis has settled (any tyre unwinding happens inside the
-// settle and is counted), so the loop now keeps nudging until the measured
-// angle is within half a degree, from either side.
-#define TURN_DEADBAND_TENTHS   5
+// 2 degrees is about the floor worth chasing: the stream shows ~1 degree of
+// mechanical settling jitter (tyres unwinding) after the rotation stops.
+#define TURN_DEADBAND_DEG      2    // "close enough"
 #define TURN_NUDGE_PWM         140
 
-// NUDGE LENGTH, LEARNED. A nudge's effect varies 3x with battery and floor
-// (logged: 40 ms moved anything from 2.5 to 7.8 degrees), so a fixed
-// ms-per-degree either creeps or overshoots. Model:
-//   ms = TURN_NUDGE_MS_MIN + wanted_degrees * k
-// where TURN_NUDGE_MS_MIN is the breakaway time (below ~15 ms a 140-PWM nudge
-// barely moves: 12 ms -> 0.3 deg, 14 -> 0.6) and k (ms per degree) is
-// re-estimated after EVERY nudge from what the gyro says it actually did, and
-// carried over to the next turn. Each nudge aims at TURN_NUDGE_AIM_PCT of the
-// remaining error, so an optimistic k lands short (and the next nudge, with a
-// better k, finishes it) rather than past the target.
+// Nudge duration SCALES with the remaining error instead of firing the same
+// fixed-length pulse regardless of how far off the turn is. A fixed pulse
+// either wastes correction attempts creeping toward a large residual error,
+// or overcorrects a 1 degree residual by the same amount used for a 6 degree
+// one -- which is how a "converging" turn ends up oscillating around the
+// target instead of settling into TURN_DEADBAND_DEG.
+// ms = clamp(error_deg * TURN_NUDGE_MS_PER_DEG, MIN, MAX). Tune
+// TURN_NUDGE_MS_PER_DEG from the per-turn trace: still 2+ nudges of the same
+// sign in a row -> raise it; nudges routinely overshoot the deadband the other
+// way -> lower it.
+// Below ~15 ms a 140-PWM nudge barely breaks the tyres loose: measured 12 ms
+// -> 0.3 deg, 14 ms -> 0.6, 19 ms -> 1.2, 27 ms -> 3.5, 40 ms -> 2.5..7.8. An
+// 8 ms nudge spent a whole attempt (and a 500 ms settle) doing nothing.
 #define TURN_NUDGE_MS_MIN      15
-#define TURN_NUDGE_MS_MAX      60
-#define TURN_NUDGE_K10_INIT    50   // k x10: 5 ms per degree (fits the logged data)
-#define TURN_NUDGE_K10_MIN     10
-#define TURN_NUDGE_K10_MAX     300
-#define TURN_NUDGE_AIM_PCT     90
+#define TURN_NUDGE_MS_MAX      40
+#define TURN_NUDGE_MS_PER_DEG  6    // ms per whole degree of residual error
 
 // 5 was routinely almost used up (4 or 5 nudges on half the logged turns), and
-// a turn that runs out is simply left off-angle. With the tighter deadband
-// above, 10; each costs ~0.55 s and only when it is needed.
-#define TURN_MAX_NUDGES        10
+// a turn that runs out is simply left off-angle. 8 costs ~1.5 s in the worst
+// case and only when it is needed.
+#define TURN_MAX_NUDGES        8
 
 // PINNED TURN. Two full-length nudges in a row that close the error by less
 // than this (tenths of a degree) mean the chassis cannot rotate -- a corner is
@@ -611,11 +605,8 @@
 // back-off pulses (see BACKOFF_PULSE_MS below), once, and carries on nudging.
 // See execute_single() in turn.c.
 #define TURN_STUCK_PROGRESS_DEG10  5
-#define TURN_STUCK_MIN_NUDGE_MS    40   // shorter nudges may just not break loose
 #define TURN_UNSTICK_PULSES        2
-// Safety: abort a turn that never finishes. Sweep ~1 s + 10 nudges x ~0.55 s
-// + a back-off fits comfortably.
-#define TURN_TIMEOUT_MS        12000
+#define TURN_TIMEOUT_MS        7000 // safety: abort a turn that never finishes
 
 // Do a 180 as two 90s with a settle between. Usually more accurate than one
 // long sweep because momentum has less time to build. Set 0 for a single 180.

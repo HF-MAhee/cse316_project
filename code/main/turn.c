@@ -165,22 +165,16 @@ static uint8_t creep_back(uint8_t max_pulses, uint16_t stop_front_cm, uint16_t m
     return k;
 }
 
-// Learned nudge response: ms of nudge per degree of rotation beyond the
-// breakaway time, x10. Kept across turns -- battery and floor change slowly,
-// so the last turn's figure is the best first guess for this one.
-static uint16_t s_nudge_k10 = TURN_NUDGE_K10_INIT;
-
 static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t *res) {
     const uint8_t cw = (dir == TURN_RIGHT) ? 1 : 0;
     const int32_t target   = (target_tenths * GYRO_LSB_MS_PER_DEGREE) / 10L;
-    const int32_t deadband = ((int32_t)TURN_DEADBAND_TENTHS * GYRO_LSB_MS_PER_DEGREE) / 10L;
+    const int32_t deadband = (int32_t)TURN_DEADBAND_DEG * GYRO_LSB_MS_PER_DEGREE;
     int32_t stop_at = target - ((int32_t)TURN_STOP_MARGIN_DEG * GYRO_LSB_MS_PER_DEGREE);
 
     uint32_t next_ms = millis() + TURN_TICK_MS;
     uint32_t t_start = millis();
     uint8_t  i;
     uint8_t  no_progress = 0;   // consecutive nudges that did not close the error
-    const uint16_t k_at_start = s_nudge_k10;
     uint8_t  backed_off  = 0;   // the one straight back-off has been used
 
     if (stop_at < 0) stop_at = 0;
@@ -232,52 +226,30 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
         ((target - abs32(Heading_Raw())) * 10L) / GYRO_LSB_MS_PER_DEGREE;
 
     // --- PHASE 5: closed-loop correction ----------------------------------
-    // The chassis is stopped and the accumulator holds the true angle turned
-    // so far -- including any coast and tyre unwinding, since the settle kept
-    // integrating. The error is therefore KNOWN, whatever the sweep did. Nudge
-    // in whichever direction shrinks it (cw if undershot, the reverse if
-    // overshot), let it settle, re-measure, and repeat until the measured
-    // angle is within TURN_DEADBAND_TENTHS of the target.
+    // The chassis is stopped and the accumulator now holds the true angle.
+    // Nudge in whichever direction shrinks the error (cw if undershot, the
+    // reverse if overshot), then re-measure. The nudge LENGTH scales with
+    // the remaining error instead of firing the same fixed pulse regardless
+    // of size -- a fixed pulse either crawls toward a large gap or blows
+    // through a tiny one by the same amount, which oscillates instead of
+    // converging.
     for (i = 0; i < TURN_MAX_NUDGES; i++) {
         int32_t err = target - abs32(Heading_Raw());
-        int32_t err10, want10, moved10, h_before;
+        int32_t err_deg_tenths;
         uint16_t nudge_ms;
 
         if (abs32(err) <= deadband) break;
         if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
 
-        err10   = (abs32(err) * 10L) / GYRO_LSB_MS_PER_DEGREE;
-        want10  = (err10 * TURN_NUDGE_AIM_PCT) / 100L;
-        {
-            int32_t ms = TURN_NUDGE_MS_MIN + (want10 * (int32_t)s_nudge_k10) / 100L;
-            if (ms > TURN_NUDGE_MS_MAX) ms = TURN_NUDGE_MS_MAX;
-            nudge_ms = (uint16_t)ms;
-        }
+        err_deg_tenths = (abs32(err) * 10L) / GYRO_LSB_MS_PER_DEGREE;
+        nudge_ms = (uint16_t)((err_deg_tenths * TURN_NUDGE_MS_PER_DEG) / 10L);
+        if (nudge_ms < TURN_NUDGE_MS_MIN) nudge_ms = TURN_NUDGE_MS_MIN;
+        if (nudge_ms > TURN_NUDGE_MS_MAX) nudge_ms = TURN_NUDGE_MS_MAX;
 
-        h_before = abs32(Heading_Raw());
         Power_SetActivity(ACT_TURN_NUDGE);
         pulse_tracked((err > 0) ? cw : !cw, TURN_NUDGE_PWM, nudge_ms, &next_ms);
         settle_tracked(TURN_SETTLE_MS, &next_ms);
         res->nudges_used++;
-
-        // What the nudge really did, in its own direction, tenths of a degree
-        // (negative = the chassis went the other way).
-        moved10 = ((abs32(Heading_Raw()) - h_before) * 10L) / GYRO_LSB_MS_PER_DEGREE;
-        if (err < 0) moved10 = -moved10;
-
-        // Learn k from it. A nudge that moved a measurable amount gives
-        // k = (ms beyond breakaway) / degrees moved; average it in. One that
-        // barely moved means k is too small -- raise it by half.
-        if (moved10 >= 3 && nudge_ms > TURN_NUDGE_MS_MIN) {
-            int32_t k_obs = ((int32_t)(nudge_ms - TURN_NUDGE_MS_MIN) * 100L) / moved10;
-            int32_t k_new = ((int32_t)s_nudge_k10 + k_obs) / 2;
-            if (k_new < TURN_NUDGE_K10_MIN) k_new = TURN_NUDGE_K10_MIN;
-            if (k_new > TURN_NUDGE_K10_MAX) k_new = TURN_NUDGE_K10_MAX;
-            s_nudge_k10 = (uint16_t)k_new;
-        } else if (moved10 < 3) {
-            uint16_t k_new = (uint16_t)(s_nudge_k10 + s_nudge_k10 / 2);
-            s_nudge_k10 = (k_new > TURN_NUDGE_K10_MAX) ? TURN_NUDGE_K10_MAX : k_new;
-        }
 
 #if TURN_TRACE
         // Which way this nudge pushed and how long, then where it landed.
@@ -288,7 +260,6 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
         if (err > 0) Debug_P(" fwd "); else Debug_P(" rev ");
         Debug_KVF("ms", (int32_t)nudge_ms);
         Debug_KVF("hdg10", Heading_DegreesTenths());
-        Debug_KVF("k10", (int32_t)s_nudge_k10);
         Debug_NL();
 #endif
 
@@ -299,9 +270,12 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
         // 0.3 degrees and the turn gave up 21 degrees short. Two of those in a
         // row: back straight off once, which frees the corner, and carry on.
         {
-            // Only a long nudge counts: a short one near the target can
-            // legitimately fail to break the tyres loose.
-            if (nudge_ms >= TURN_STUCK_MIN_NUDGE_MS && moved10 < TURN_STUCK_PROGRESS_DEG10) {
+            int32_t after    = abs32(target - abs32(Heading_Raw()));
+            int32_t progress = abs32(err) - after;
+            // Only a full-length nudge counts: a short one near the target
+            // can legitimately fail to break the tyres loose.
+            if (nudge_ms >= TURN_NUDGE_MS_MAX &&
+                progress * 10L < (int32_t)TURN_STUCK_PROGRESS_DEG10 * GYRO_LSB_MS_PER_DEGREE) {
                 no_progress++;
             } else {
                 no_progress = 0;
@@ -309,8 +283,6 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
             if (no_progress >= 2 && !backed_off) {
                 backed_off  = 1;
                 no_progress = 0;
-                // The pinned nudges taught k nothing true -- it only grew.
-                s_nudge_k10 = k_at_start;
                 creep_back(TURN_UNSTICK_PULSES, 0, 0, &next_ms, 0);
 #if TURN_TRACE
                 Debug_P("  T pinned, backed off");
