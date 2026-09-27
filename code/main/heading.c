@@ -27,6 +27,14 @@ static int32_t abs32(int32_t v) { return (v < 0) ? -v : v; }
 // bias alone can sit permanently above the threshold, making the robot
 // look "constantly rocking" and freezing Drive_Tick() in its gyro-only
 // fallback (mode 3) even on a perfectly still table.
+// Average rounded to the NEAREST integer. Plain C division truncates toward
+// zero, and the Z bias on this board is negative (-83..-90 LSB), so a
+// truncated offset always came out up to 1 LSB too high -- a bias with the
+// same sign in every calibration, which integrates into every turn.
+static int32_t avg_round(int32_t sum, int32_t n) {
+    return (sum >= 0) ? (sum + n / 2) / n : -((-sum + n / 2) / n);
+}
+
 static uint8_t calibrate(uint16_t samples) {
     int32_t sum_x = 0, sum_y = 0, sum_z = 0;
     int16_t zmin = 32767, zmax = -32768;
@@ -47,9 +55,9 @@ static uint8_t calibrate(uint16_t samples) {
         return 0;                       // chassis was moving -- reject
     }
 
-    s_offset   = (sum_z / (int32_t)samples) + GYRO_OFFSET_TRIM;
-    s_offset_x = sum_x / (int32_t)samples;
-    s_offset_y = sum_y / (int32_t)samples;
+    s_offset   = avg_round(sum_z, (int32_t)samples) + GYRO_OFFSET_TRIM;
+    s_offset_x = avg_round(sum_x, (int32_t)samples);
+    s_offset_y = avg_round(sum_y, (int32_t)samples);
     return 1;
 }
 
@@ -76,9 +84,9 @@ uint8_t Gyro_CalibrateFull(void) {
             sum_x += g.x; sum_y += g.y; sum_z += g.z;
             Timer_WaitMs(GYRO_CAL_INTERVAL_MS);
         }
-        s_offset   = (sum_z / GYRO_CAL_SAMPLES_INIT) + GYRO_OFFSET_TRIM;
-        s_offset_x = sum_x / GYRO_CAL_SAMPLES_INIT;
-        s_offset_y = sum_y / GYRO_CAL_SAMPLES_INIT;
+        s_offset   = avg_round(sum_z, GYRO_CAL_SAMPLES_INIT) + GYRO_OFFSET_TRIM;
+        s_offset_x = avg_round(sum_x, GYRO_CAL_SAMPLES_INIT);
+        s_offset_y = avg_round(sum_y, GYRO_CAL_SAMPLES_INIT);
     }
     return 0;                   // offsets exist, but none of them are trusted
 }

@@ -689,9 +689,19 @@
 #define GYRO_CAL_RETRIES       3
 #define GYRO_SETTLE_MS         250  // wait for the chassis to stop rocking first
 
-// Empirical trim carried over from the straight-line tuning, re-applied after
-// every calibration.
-#define GYRO_OFFSET_TRIM       3
+// Added to the measured Z bias after every calibration. It was 3: an
+// empirical trim from the straight-line firmware, where the heading was
+// held while driving and a 3 LSB tweak straightened a long run.
+//
+// This firmware no longer uses the heading while driving -- only the rate,
+// through WALL_KD (rate / 65), and 3 / 65 is 0 in integer arithmetic, so the
+// trim no longer reached the motors at all. Its one remaining effect was on
+// TURNS: a constant 3 LSB (0.046 deg/s) error integrated over every turn,
+// 0.1-0.3 degree per turn with the nudges' settles, and -- because it is a
+// bias, not noise -- always leaving the robot rotated the same way (left)
+// after a turn, whichever way it turned. That is accumulation, so: 0. The
+// calibration measures the real bias every time the robot stops; trust it.
+#define GYRO_OFFSET_TRIM       0
 
 // Datasheet sensitivity at +/-500 dps is 65.5 LSB per deg/sec. Heading is
 // accumulated in LSB*milliseconds, so:
