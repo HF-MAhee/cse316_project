@@ -66,6 +66,8 @@ static uint32_t   s_run_started = 0;
 static uint8_t    s_exploring = 1;      // 0 = replaying a saved route
 static uint8_t    s_degraded  = 0;      // replay failed; finishing on left-hand
 static uint8_t    s_pending_turn = WM_TURN_F;
+static turn_dir_t s_uturn_dir = UTURN_TIE_DIR;   // chosen in WM_RECAL, before the flush
+static uint16_t   s_uturn_side_cm = SONAR_NO_ECHO; // that side's reading at the time
 
 // Debounce, same shape as the maze solver's: a single bad ping must never
 // trigger a turn, and a spurious U-turn is the expensive one.
@@ -471,6 +473,22 @@ void Solver_Tick(const tick_ctx_t *t) {
     case WM_RECAL:
         // Refresh the gyro bias while genuinely stationary; thermal drift over
         // a long explore run otherwise creeps into every later turn.
+        //
+        // A U-turn's direction is decided from the side walls, so it has to
+        // be decided HERE, from the readings taken while stopping -- after
+        // Sonar_Flush() below there is nothing left to decide from, and
+        // pick_180_dir() fell through to "one side seen" or the tie default
+        // whatever the walls really were.
+        if (s_pending_turn == WM_TURN_U) {
+            s_uturn_dir = pick_180_dir();
+            s_uturn_side_cm = Sonar_IsValid(s_uturn_dir == TURN_LEFT ? SONAR_LEFT : SONAR_RIGHT)
+                ? Sonar_Median(s_uturn_dir == TURN_LEFT ? SONAR_LEFT : SONAR_RIGHT)
+                : SONAR_NO_ECHO;
+            Debug_KVF("uturn L", (int32_t)Sonar_Median(SONAR_LEFT));
+            Debug_KVF("R", (int32_t)Sonar_Median(SONAR_RIGHT));
+            if (s_uturn_dir == TURN_LEFT) Debug_P("-> left\r\n");
+            else                          Debug_P("-> right\r\n");
+        }
         if (!Gyro_CalibrateQuick()) Debug_P("recal SKIPPED\r\n");
         Heading_Reset();
         Sonar_Flush();
@@ -480,7 +498,7 @@ void Solver_Tick(const tick_ctx_t *t) {
     case WM_DECIDE: {
         turn_result_t res;
         if (s_pending_turn == WM_TURN_U) {
-            Turn_180(pick_180_dir(), &res);
+            Turn_180(s_uturn_dir, s_uturn_side_cm, &res);
             s_turns180++;
         } else {
             Turn_90((s_pending_turn == WM_TURN_L) ? TURN_LEFT : TURN_RIGHT, &res);

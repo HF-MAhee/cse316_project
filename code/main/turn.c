@@ -104,15 +104,17 @@ static void settle_tracked(uint16_t ms, uint32_t *next_ms) {
     s_coast_ms  = s_last_move_ms;
 }
 
-static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res) {
+static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t *res) {
     const uint8_t cw = (dir == TURN_RIGHT) ? 1 : 0;
-    const int32_t target   = (int32_t)degrees * GYRO_LSB_MS_PER_DEGREE;
-    const int32_t stop_at  = target - ((int32_t)TURN_STOP_MARGIN_DEG * GYRO_LSB_MS_PER_DEGREE);
+    const int32_t target   = (target_tenths * GYRO_LSB_MS_PER_DEGREE) / 10L;
     const int32_t deadband = (int32_t)TURN_DEADBAND_DEG * GYRO_LSB_MS_PER_DEGREE;
+    int32_t stop_at = target - ((int32_t)TURN_STOP_MARGIN_DEG * GYRO_LSB_MS_PER_DEGREE);
 
     uint32_t next_ms = millis() + TURN_TICK_MS;
     uint32_t t_start = millis();
     uint8_t  i;
+
+    if (stop_at < 0) stop_at = 0;
 
     Heading_Reset();
     res->timed_out   = 0;
@@ -222,8 +224,8 @@ static void execute_single(uint16_t degrees, turn_dir_t dir, turn_result_t *res)
     }
 }
 
-void Turn_Execute(uint16_t degrees, turn_dir_t dir, turn_result_t *res) {
-    execute_single(degrees, dir, res);
+static void execute_tenths(int32_t target_tenths, turn_dir_t dir, turn_result_t *res) {
+    execute_single(target_tenths, dir, res);
 
     // Recalibrate the gyro bias after every pivot (your requirement).
     // The chassis is stationary here, which is the only time a valid bias
@@ -237,19 +239,111 @@ void Turn_Execute(uint16_t degrees, turn_dir_t dir, turn_result_t *res) {
     Heading_Reset();
 }
 
+void Turn_Execute(uint16_t degrees, turn_dir_t dir, turn_result_t *res) {
+    execute_tenths((int32_t)degrees * 10L, dir, res);
+}
+
 void Turn_90(turn_dir_t dir, turn_result_t *res) {
     Turn_Execute(90, dir, res);
 }
 
-void Turn_180(turn_dir_t dir, turn_result_t *res) {
+// Front distance while standing still: median of three fresh pings, in cm.
+// SONAR_TOO_CLOSE comes back as 0 so it compares as "nearer than anything".
+static uint16_t front_still(void) {
+    uint16_t v[3], t;
+    uint8_t  k;
+    for (k = 0; k < 3; k++) {
+        if (k) Timer_WaitMs(30);            // let the last echo die away
+        v[k] = Sonar_PingNow(SONAR_FRONT);
+        if (v[k] == SONAR_TOO_CLOSE) v[k] = 0;
+    }
+    if (v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
+    if (v[1] > v[2]) { t = v[1]; v[1] = v[2]; v[2] = t; }
+    if (v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
+    return v[1];
+}
+
+// Between the two halves of a U-turn. The first 90 has left the robot facing
+// what was the side wall on the turning side; if that wall is too close, the
+// second 90 drives the front corner into it. Back straight off until the wall
+// is UTURN_MID_FRONT_CM away (or UTURN_BACKOFF_MAX_MS runs out).
+//
+// side_cm is what that side read BEFORE the turn. It resolves one ambiguity:
+// right up against a wall an HC-SR04 often returns no echo at all, which on
+// its own reads as open space. If there was a wall on that side, no echo now
+// means too close, not open.
+//
+// The heading is integrated throughout. Returns the rotation picked up while
+// reversing, tenths of a degree, positive = in the turning direction, so the
+// second half can take it off its own target.
+static int32_t uturn_clearance(turn_dir_t dir, uint16_t side_cm) {
+    uint16_t f = front_still();
+    uint16_t f_end;
+    uint32_t next_ms, t0, el;
+    uint8_t  n = 0;
+    int32_t  h10;
+
+    if (f == SONAR_NO_ECHO && side_cm < OPENING_THRESHOLD_CM) f = 0;
+
+    Debug_KVF("  mid-uturn front", (int32_t)f);
+    if (f >= UTURN_MID_FRONT_CM) {
+        Debug_P("ok\r\n");
+        return 0;
+    }
+
+    Debug_P("too close, backing off\r\n");
+    Power_SetActivity(ACT_REVERSING);
+    next_ms = millis() + TURN_TICK_MS;
+    t0 = millis();
+    while ((el = millis() - t0) < UTURN_BACKOFF_MAX_MS) {
+        // Same breakaway ramp as every other start from rest.
+        uint8_t p = (el < TURN_KICK_MS)
+            ? (uint8_t)(MOTOR_MIN_PWM + (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * el) / TURN_KICK_MS))
+            : (uint8_t)UTURN_BACKOFF_PWM;
+        Motors_SetLeft(DIR_REV, p);
+        Motors_SetRight(DIR_REV, p);
+        turn_sample(&next_ms);
+        // One front ping every 6 samples (~30 ms) -- as often as the echo
+        // allows. Stop as soon as the wall is far enough.
+        if (++n >= 6) {
+            uint16_t v = Sonar_PingNow(SONAR_FRONT);
+            n = 0;
+            if (v != SONAR_NO_ECHO && v != SONAR_TOO_CLOSE && v >= UTURN_MID_FRONT_CM) break;
+        }
+    }
+    settle_tracked(TURN_SETTLE_MS, &next_ms);   // stops the motors
+    Power_SetActivity(ACT_IDLE);
+
+    f_end = front_still();
+    h10 = Heading_DegreesTenths();
+    Debug_KVF("  backed off ms", (int32_t)el);
+    Debug_KVF("front", (int32_t)f_end);
+    Debug_KVF("yaw10", h10);
+    Debug_NL();
+    return (dir == TURN_RIGHT) ? -h10 : h10;
+}
+
+void Turn_180(turn_dir_t dir, uint16_t side_cm, turn_result_t *res) {
 #if TURN_180_AS_TWO_90S
     // Two 90s with a settle between usually beats one long sweep: momentum
-    // has less time to build, so there is less coast to correct for.
+    // has less time to build, so there is less coast to correct for. It also
+    // gives a stop halfway, facing a wall, which is the one moment the
+    // clearance for the rest of the turn can be measured and fixed.
     turn_result_t a, b;
-    Turn_Execute(90, dir, &a);
+    int32_t moved10, second10;
+
+    execute_tenths(900, dir, &a);
     Timer_WaitMs(200);
-    Turn_Execute(90, dir, &b);
-    res->achieved_tenths      = a.achieved_tenths + b.achieved_tenths;
+    moved10 = uturn_clearance(dir, side_cm);
+
+    // The second half aims at 180 in TOTAL, not at another 90: whatever the
+    // first half left inside its deadband (up to 2 degrees either way), and
+    // whatever the reverse added, is taken off here instead of doubling up.
+    second10 = 1800L - a.achieved_tenths - moved10;
+    if (a.wrong_way) second10 = 900;        // first half is not trustworthy
+    execute_tenths(second10, dir, &b);
+
+    res->achieved_tenths      = a.achieved_tenths + moved10 + b.achieved_tenths;
     res->nudges_used          = (uint8_t)(a.nudges_used + b.nudges_used);
     res->timed_out            = a.timed_out | b.timed_out;
     res->recal_ok             = b.recal_ok;
@@ -257,11 +351,12 @@ void Turn_180(turn_dir_t dir, turn_result_t *res) {
     res->peak_rate            = (a.peak_rate > b.peak_rate) ? a.peak_rate : b.peak_rate;
     res->wrong_way            = a.wrong_way | b.wrong_way;
     res->coast_ms             = (a.coast_ms > b.coast_ms) ? a.coast_ms : b.coast_ms;
-    res->final_error_tenths   = a.final_error_tenths + b.final_error_tenths;
-    res->converged            = a.converged & b.converged;
+    res->final_error_tenths   = b.final_error_tenths;
+    res->converged            = b.converged;
     res->residual_raw         = b.residual_raw;   // only the last turn's frame
                                                   // is still current
 #else
+    (void)side_cm;
     Turn_Execute(180, dir, res);
 #endif
 }

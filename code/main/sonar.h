@@ -26,6 +26,12 @@ uint8_t  Sonar_IsOpen(sonar_id_t id);
 // as open.
 uint8_t  Sonar_HasSample(sonar_id_t id);
 
+// One blocking ping of one sensor, bypassing the filters (up to ~4 ms). For
+// the turn code, which needs a distance while the control loop is not
+// running. Returns cm, SONAR_TOO_CLOSE, or SONAR_NO_ECHO. Leave ~30 ms
+// between calls so the previous echo has died away.
+uint16_t Sonar_PingNow(sonar_id_t id);
+
 // 1 when the front is closer than FRONT_BLOCKED_CM.
 uint8_t  Sonar_FrontBlocked(void);
 

@@ -77,6 +77,9 @@ void Turn_90(turn_dir_t dir, turn_result_t *res);
 // turned towards, while the rear corners only reach about 10.6 cm out the
 // other side. So a 180 needs roughly 6 cm MORE free space on the side it
 // rotates into. In a dead end, pick the direction AWAY from the nearer wall.
-void Turn_180(turn_dir_t dir, turn_result_t *res);
+// side_cm: what the sonar on the side it rotates towards read before the
+// turn (SONAR_NO_ECHO if unknown). Used to tell "too close to echo" from
+// "open" at the halfway point -- see uturn_clearance() in turn.c.
+void Turn_180(turn_dir_t dir, uint16_t side_cm, turn_result_t *res);
 
 #endif

@@ -558,6 +558,21 @@
 // long sweep because momentum has less time to build. Set 0 for a single 180.
 #define TURN_180_AS_TWO_90S    1
 
+// CLEARANCE BETWEEN THE TWO HALVES OF A U-TURN.
+// After the first 90 the robot faces what was a side wall. The front corners
+// swing 17 cm from the axle and the front sonar sits SONAR_TO_AXLE_CM (15)
+// ahead of it, so the second 90 clears that wall only if the front sonar
+// reads a few cm or more -- and in a 40 cm corridor a robot even 3 cm off
+// centre reads less. The robot then drove its front corner into that wall
+// instead of pivoting. So: measure, and back straight off until the wall is
+// at least this far away. 8 cm is the figure the older dead-end handler used.
+#define UTURN_MID_FRONT_CM     8
+#define UTURN_BACKOFF_PWM      DRIVE_BASE_PWM
+// Hard cap on that reverse. The rear corners sit ~7 cm behind the axle, and
+// the opposite wall is ~40 cm from the one ahead, so ~300 ms (7-9 cm) is as
+// far as it is safe to go without looking behind -- there is no rear sonar.
+#define UTURN_BACKOFF_MAX_MS   300
+
 // Per-phase turn trace: each phase boundary prints the heading it ended at
 // (about 10 short lines per turn, ~250 bytes over ~1.5 s: no risk to the byte
 // budget). This is what tells a too-short settle from a too-long coast from a
