@@ -530,7 +530,14 @@
 // This value is calibrated for 90 degree turns. A single 180 degree sweep
 // would exit far faster and coast much further, which is the real reason
 // TURN_180_AS_TWO_90S must stay 1.
-#define TURN_STOP_MARGIN_DEG   35
+//
+// RE-MEASURED on the 24-27 Sep runs: sweep exit -> rest was 19.1, 17.8, 19.1,
+// 19.0, 26.8, 25.3, 29.3, 19.6 degrees on eight 90s -- a mean of ~22, well
+// under the 41 this was sized for (a fresher pack spun faster). With 35 every
+// turn landed 6-16 degrees short and spent 2-5 nudges walking the rest; one
+// more miss and the budget ran out. 28 puts those same turns at 79-91: mostly
+// within a nudge or two, and the loop corrects an overshoot just as well.
+#define TURN_STOP_MARGIN_DEG   28
 
 // 2 degrees is about the floor worth chasing: the stream shows ~1 degree of
 // mechanical settling jitter (tyres unwinding) after the rotation stops.
@@ -547,11 +554,24 @@
 // TURN_NUDGE_MS_PER_DEG from the per-turn trace: still 2+ nudges of the same
 // sign in a row -> raise it; nudges routinely overshoot the deadband the other
 // way -> lower it.
-#define TURN_NUDGE_MS_MIN      8
+// Below ~15 ms a 140-PWM nudge barely breaks the tyres loose: measured 12 ms
+// -> 0.3 deg, 14 ms -> 0.6, 19 ms -> 1.2, 27 ms -> 3.5, 40 ms -> 2.5..7.8. An
+// 8 ms nudge spent a whole attempt (and a 500 ms settle) doing nothing.
+#define TURN_NUDGE_MS_MIN      15
 #define TURN_NUDGE_MS_MAX      40
 #define TURN_NUDGE_MS_PER_DEG  6    // ms per whole degree of residual error
 
-#define TURN_MAX_NUDGES        5
+// 5 was routinely almost used up (4 or 5 nudges on half the logged turns), and
+// a turn that runs out is simply left off-angle. 8 costs ~1.5 s in the worst
+// case and only when it is needed.
+#define TURN_MAX_NUDGES        8
+
+// PINNED TURN. Two full-length nudges in a row that close the error by less
+// than this (tenths of a degree) mean the chassis cannot rotate -- a corner is
+// against a wall. The turn then reverses straight for TURN_UNSTICK_MS (about
+// 4 cm), once, and carries on nudging. See execute_single() in turn.c.
+#define TURN_STUCK_PROGRESS_DEG10  5
+#define TURN_UNSTICK_MS            150
 #define TURN_TIMEOUT_MS        7000 // safety: abort a turn that never finishes
 
 // Do a 180 as two 90s with a settle between. Usually more accurate than one

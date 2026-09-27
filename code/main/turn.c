@@ -104,6 +104,36 @@ static void settle_tracked(uint16_t ms, uint32_t *next_ms) {
     s_coast_ms  = s_last_move_ms;
 }
 
+// Reverse straight, integrating the heading throughout, then settle. Stops
+// early once the front sonar reads at least stop_front_cm (0 = never look).
+// There is no rear sonar, so max_ms is the only thing limiting how far back
+// it goes -- keep it short. Returns how long it actually reversed, ms.
+static uint32_t reverse_tracked(uint16_t max_ms, uint16_t stop_front_cm, uint32_t *next_ms) {
+    uint32_t t0 = millis();
+    uint32_t el;
+    uint8_t  n = 0;
+
+    Power_SetActivity(ACT_REVERSING);
+    while ((el = millis() - t0) < max_ms) {
+        // Same breakaway ramp as every other start from rest.
+        uint8_t p = (el < TURN_KICK_MS)
+            ? (uint8_t)(MOTOR_MIN_PWM + (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * el) / TURN_KICK_MS))
+            : (uint8_t)UTURN_BACKOFF_PWM;
+        Motors_SetLeft(DIR_REV, p);
+        Motors_SetRight(DIR_REV, p);
+        turn_sample(next_ms);
+        // One front ping every 6 samples (~30 ms) -- as often as the echo
+        // allows.
+        if (stop_front_cm && ++n >= 6) {
+            uint16_t v = Sonar_PingNow(SONAR_FRONT);
+            n = 0;
+            if (v != SONAR_NO_ECHO && v != SONAR_TOO_CLOSE && v >= stop_front_cm) break;
+        }
+    }
+    settle_tracked(TURN_SETTLE_MS, next_ms);    // stops the motors
+    return el;
+}
+
 static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t *res) {
     const uint8_t cw = (dir == TURN_RIGHT) ? 1 : 0;
     const int32_t target   = (target_tenths * GYRO_LSB_MS_PER_DEGREE) / 10L;
@@ -113,6 +143,8 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
     uint32_t next_ms = millis() + TURN_TICK_MS;
     uint32_t t_start = millis();
     uint8_t  i;
+    uint8_t  no_progress = 0;   // consecutive nudges that did not close the error
+    uint8_t  backed_off  = 0;   // the one straight back-off has been used
 
     if (stop_at < 0) stop_at = 0;
 
@@ -199,6 +231,35 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
         Debug_KVF("hdg10", Heading_DegreesTenths());
         Debug_NL();
 #endif
+
+        // PINNED? A nudge that does not bring the error down by at least
+        // TURN_STUCK_PROGRESS_DEG10 means something is stopping the chassis
+        // from rotating -- in practice a corner against a wall. In the 13:06
+        // dead-end run four 40 ms nudges in a row moved it 1.4, -3.8, 1.6 and
+        // 0.3 degrees and the turn gave up 21 degrees short. Two of those in a
+        // row: back straight off once, which frees the corner, and carry on.
+        {
+            int32_t after    = abs32(target - abs32(Heading_Raw()));
+            int32_t progress = abs32(err) - after;
+            // Only a full-length nudge counts: a short one near the target
+            // can legitimately fail to break the tyres loose.
+            if (nudge_ms >= TURN_NUDGE_MS_MAX &&
+                progress * 10L < (int32_t)TURN_STUCK_PROGRESS_DEG10 * GYRO_LSB_MS_PER_DEGREE) {
+                no_progress++;
+            } else {
+                no_progress = 0;
+            }
+            if (no_progress >= 2 && !backed_off) {
+                backed_off  = 1;
+                no_progress = 0;
+                reverse_tracked(TURN_UNSTICK_MS, 0, &next_ms);
+#if TURN_TRACE
+                Debug_P("  T pinned, backed off");
+                Debug_KVF(" hdg10", Heading_DegreesTenths());
+                Debug_NL();
+#endif
+            }
+        }
     }
 
     Motors_Stop();
@@ -279,8 +340,7 @@ static uint16_t front_still(void) {
 static int32_t uturn_clearance(turn_dir_t dir, uint16_t side_cm) {
     uint16_t f = front_still();
     uint16_t f_end;
-    uint32_t next_ms, t0, el;
-    uint8_t  n = 0;
+    uint32_t next_ms, el;
     int32_t  h10;
 
     if (f == SONAR_NO_ECHO && side_cm < OPENING_THRESHOLD_CM) f = 0;
@@ -292,26 +352,8 @@ static int32_t uturn_clearance(turn_dir_t dir, uint16_t side_cm) {
     }
 
     Debug_P("too close, backing off\r\n");
-    Power_SetActivity(ACT_REVERSING);
     next_ms = millis() + TURN_TICK_MS;
-    t0 = millis();
-    while ((el = millis() - t0) < UTURN_BACKOFF_MAX_MS) {
-        // Same breakaway ramp as every other start from rest.
-        uint8_t p = (el < TURN_KICK_MS)
-            ? (uint8_t)(MOTOR_MIN_PWM + (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * el) / TURN_KICK_MS))
-            : (uint8_t)UTURN_BACKOFF_PWM;
-        Motors_SetLeft(DIR_REV, p);
-        Motors_SetRight(DIR_REV, p);
-        turn_sample(&next_ms);
-        // One front ping every 6 samples (~30 ms) -- as often as the echo
-        // allows. Stop as soon as the wall is far enough.
-        if (++n >= 6) {
-            uint16_t v = Sonar_PingNow(SONAR_FRONT);
-            n = 0;
-            if (v != SONAR_NO_ECHO && v != SONAR_TOO_CLOSE && v >= UTURN_MID_FRONT_CM) break;
-        }
-    }
-    settle_tracked(TURN_SETTLE_MS, &next_ms);   // stops the motors
+    el = reverse_tracked(UTURN_BACKOFF_MAX_MS, UTURN_MID_FRONT_CM, &next_ms);
     Power_SetActivity(ACT_IDLE);
 
     f_end = front_still();

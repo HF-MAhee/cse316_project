@@ -511,6 +511,12 @@ void Solver_Tick(const tick_ctx_t *t) {
         // very next signature check is what catches it.
         if (res.wrong_way) Debug_P("WRONG WAY ");
         Debug_NL();
+        if (!res.converged) {
+            // Not silent: every leg after this starts off-angle, and this is
+            // the line that says why.
+            Debug_KVF("*** TURN NOT CORRECTED, off by (tenths)", res.final_error_tenths);
+            Debug_NL();
+        }
         enter(WM_RECOVER);
         break;
     }
