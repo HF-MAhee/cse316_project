@@ -546,82 +546,86 @@
 // ---------------------------------------------------------------------------
 //  12. TURNS
 // ---------------------------------------------------------------------------
-// HOW A TURN WORKS NOW: CLOSED-LOOP SPEED CONTROL ALL THE WAY TO THE TARGET.
-//
-// It used to be open loop: pivot at a fixed PWM, cut the motors a guessed
-// TURN_STOP_MARGIN_DEG early, coast, then fire fixed-power correction nudges.
-// The logs show why that could never be precise:
-//   - the coast after the cut was 18-29 degrees on one pack and 30-40 on a
-//     fresh one (the sweep was still accelerating, up to ~370 deg/s), so the
-//     landing point moved with the battery;
-//   - the 20 ms brake pulse barely dented it;
-//   - a nudge from standstill sticks, then slips, a fairly fixed 2.5-3.7
-//     degrees whatever its length, so nudging could not land inside +/-1.
-//
-// Instead the gyro RATE is fed back every TURN_TICK_MS (5 ms). The allowed
-// speed at each moment comes from the stopping distance still available:
-//     w_allowed = sqrt(2 * TURN_CTL_DECEL_DPS2 * degrees_remaining)
-// capped at TURN_CTL_MAX_DPS and never below TURN_CTL_MIN_DPS. Slower than
-// that -> drive (TURN_CTL_PWM_FLOOR plus TURN_CTL_KP per deg/s short); faster
-// -> brake with reverse torque (TURN_CTL_KB per deg/s over). So the chassis
-// arrives at the target already crawling, at TURN_CTL_MIN_DPS, whatever the
-// battery -- and from a crawl there is almost nothing left to coast: with the
-// logged free deceleration (~1700 deg/s^2: 370 deg/s coasting to rest in ~40
-// degrees) a 20 deg/s arrival coasts ~0.1 degree. Past the target, the same
-// law runs in reverse.
-//
-// It stops once within TURN_CTL_ARRIVE_TENTHS and slower than
-// TURN_CTL_STOP_DPS, settles for TURN_CTL_SETTLE_MS still integrating, and
-// accepts the turn if the settled angle is within TURN_DEADBAND_TENTHS; if
-// not, the same controller runs again from there (at most
-// TURN_CTL_MAX_RESTARTS times).
-//
-// Every number below is a starting point derived from the logs, not a
-// measured optimum. The per-turn trace (TURN_TRACE_PROFILE) prints the
-// allowed speed, the actual speed and the PWM every 40 ms -- tune from that:
-//   - never reaches its allowed speed / stalls on the way: raise PWM_FLOOR;
-//   - overshoots the target by more than ~1 degree: lower DECEL_DPS2;
-//   - speed oscillates around the allowed speed: lower KP.
-#define TURN_CTL_MAX_DPS       120  // cruise; was ~370 open loop at PWM 85
-#define TURN_CTL_MIN_DPS       15   // crawl into the target
-#define TURN_CTL_DECEL_DPS2    300  // well under the ~1700 the chassis coasts at
-#define TURN_CTL_PWM_FLOOR     55   // drive level at a crawl (pivot, both wheels)
-#define TURN_CTL_PWM_MAX       KICK_PWM
-#define TURN_CTL_KP_NUM        3    // 0.3 PWM per deg/s below the allowed speed
-#define TURN_CTL_KP_DEN        10
-#define TURN_CTL_KB_NUM        5    // 0.5 PWM per deg/s above it (reverse torque)
-#define TURN_CTL_KB_DEN        10
-// Change in PWM allowed per 5 ms tick. Ramps the start (0 -> 120 in ~75 ms,
-// the same current-limiting job the old ramped kick did) and every reversal.
-#define TURN_CTL_SLEW          8
-// Breakaway: while driven but not moving (under TURN_CTL_STALL_DPS), add
-// TURN_CTL_BOOST_STEP PWM per tick, up to TURN_CTL_BOOST_MAX; it bleeds off by
-// one per tick once the chassis moves. Static friction is higher than rolling
-// friction, and this finds the difference instead of guessing it.
-#define TURN_CTL_STALL_DPS     5
-#define TURN_CTL_BOOST_STEP    1
-#define TURN_CTL_BOOST_MAX     60
-// Still stalled with the full boost for this long: a corner is against a
-// wall. Creep straight back TURN_UNSTICK_PULSES pulses, once, and carry on.
-#define TURN_CTL_PINNED_MS     400
-#define TURN_UNSTICK_PULSES    2
-#define TURN_CTL_ARRIVE_TENTHS 5    // stop within half a degree...
-#define TURN_CTL_STOP_DPS      30   // ...and only once this slow
-#define TURN_CTL_SETTLE_MS     300
-#define TURN_DEADBAND_TENTHS   10   // accept the settled angle within 1 degree
-#define TURN_CTL_MAX_RESTARTS  3
-#define TURN_TIMEOUT_MS        7000 // safety: abort a turn that never finishes
-// Print allowed speed / actual speed / PWM every 8 ticks (40 ms). ~20 short
-// lines per turn -- well inside the serial budget.
-#define TURN_TRACE_PROFILE     1
-
-// Settle used by the straight back-off pulses (see creep_back in turn.c).
+#define TURN_PWM               85   // slow = accurate
+#define TURN_KICK_PWM          KICK_PWM
+#define TURN_KICK_MS           40
+#define TURN_BRAKE_PWM         100
+#define TURN_BRAKE_MS          20
+// Measured (6 logged turns, both directions): after the motors cut, the
+// chassis was still rotating above ~3 deg/sec for the WHOLE 300ms window --
+// coast_ms came back 283..305 against a 300 window, and one turn was still at
+// 23 deg/sec when it closed. The closed-loop correction below was therefore
+// measuring a heading that had not stopped changing. 500 gives real margin.
 #define TURN_SETTLE_MS         500  // motors off, still integrating coast
 
 // |yaw rate| below this counts as "stopped" when measuring how long the
 // chassis actually coasts after the motors cut (turn_result_t.coast_ms).
-// Raw LSB; ~65 LSB per deg/sec, so 200 ~= 3 deg/sec.
+// Raw LSB; 65.5 LSB per deg/sec, so 200 ~= 3 deg/sec.
 #define TURN_STILL_LSB         200
+
+// Cut the main sweep this early. Was 4, which was not a coast estimate at all
+// -- measured coast from sweep exit to rest is 36.7/40.2/40.9/41.0/46.4/42.3
+// degrees (mean 41.3) because the sweep is still ACCELERATING when it exits
+// (rate climbed monotonically to ~24000 LSB, ~370 deg/sec, never reaching
+// terminal velocity in 86 degrees). The result was a physical swing to ~128
+// degrees followed by 4-5 reverse nudges back to 90: correct final angle,
+// wrong mechanism, and a 38 degree excursion the corridor has to absorb.
+//
+// 35 is derived, not guessed: cutting at 55 degrees leaves the chassis at
+// ~20800 LSB instead of ~22700, and coast scales somewhere between linearly
+// and quadratically with cut-off rate, which puts the landing at 89.6..92.8
+// degrees. The nudge loop trims either end of that easily -- and it corrects
+// in BOTH directions, so an over- or under-estimate here is self-healing.
+// To confirm on the bench, watch the per-turn trace (TURN_TRACE): expect the
+// initial error near zero and 0-1 nudges.
+//
+// This value is calibrated for 90 degree turns. A single 180 degree sweep
+// would exit far faster and coast much further, which is the real reason
+// TURN_180_AS_TWO_90S must stay 1.
+//
+// RE-MEASURED on the 24-27 Sep runs: sweep exit -> rest was 19.1, 17.8, 19.1,
+// 19.0, 26.8, 25.3, 29.3, 19.6 degrees on eight 90s -- a mean of ~22, well
+// under the 41 this was sized for (a fresher pack spun faster). With 35 every
+// turn landed 6-16 degrees short and spent 2-5 nudges walking the rest; one
+// more miss and the budget ran out. 28 puts those same turns at 79-91: mostly
+// within a nudge or two, and the loop corrects an overshoot just as well.
+#define TURN_STOP_MARGIN_DEG   28
+
+// 2 degrees is about the floor worth chasing: the stream shows ~1 degree of
+// mechanical settling jitter (tyres unwinding) after the rotation stops.
+#define TURN_DEADBAND_DEG      2    // "close enough"
+#define TURN_NUDGE_PWM         140
+
+// Nudge duration SCALES with the remaining error instead of firing the same
+// fixed-length pulse regardless of how far off the turn is. A fixed pulse
+// either wastes correction attempts creeping toward a large residual error,
+// or overcorrects a 1 degree residual by the same amount used for a 6 degree
+// one -- which is how a "converging" turn ends up oscillating around the
+// target instead of settling into TURN_DEADBAND_DEG.
+// ms = clamp(error_deg * TURN_NUDGE_MS_PER_DEG, MIN, MAX). Tune
+// TURN_NUDGE_MS_PER_DEG from the per-turn trace: still 2+ nudges of the same
+// sign in a row -> raise it; nudges routinely overshoot the deadband the other
+// way -> lower it.
+// Below ~15 ms a 140-PWM nudge barely breaks the tyres loose: measured 12 ms
+// -> 0.3 deg, 14 ms -> 0.6, 19 ms -> 1.2, 27 ms -> 3.5, 40 ms -> 2.5..7.8. An
+// 8 ms nudge spent a whole attempt (and a 500 ms settle) doing nothing.
+#define TURN_NUDGE_MS_MIN      15
+#define TURN_NUDGE_MS_MAX      40
+#define TURN_NUDGE_MS_PER_DEG  6    // ms per whole degree of residual error
+
+// 5 was routinely almost used up (4 or 5 nudges on half the logged turns), and
+// a turn that runs out is simply left off-angle. 8 costs ~1.5 s in the worst
+// case and only when it is needed.
+#define TURN_MAX_NUDGES        8
+
+// PINNED TURN. Two full-length nudges in a row that close the error by less
+// than this (tenths of a degree) mean the chassis cannot rotate -- a corner is
+// against a wall. The turn then creeps straight back TURN_UNSTICK_PULSES
+// back-off pulses (see BACKOFF_PULSE_MS below), once, and carries on nudging.
+// See execute_single() in turn.c.
+#define TURN_STUCK_PROGRESS_DEG10  5
+#define TURN_UNSTICK_PULSES        2
+#define TURN_TIMEOUT_MS        7000 // safety: abort a turn that never finishes
 
 // Do a 180 as two 90s with a settle between. Usually more accurate than one
 // long sweep because momentum has less time to build. Set 0 for a single 180.
@@ -655,10 +659,10 @@
 // sonar says stop" overshoots by more than the whole margin. Instead the
 // back-off is short PULSES from a standstill: one pulse, stop, let it settle,
 // measure, repeat. A pulse is the same strength and length as a turn nudge
-// (PWM 140 for 40 ms, which rotated the chassis 2.5-7.8 degrees as a pivot, i.e.
+// (TURN_NUDGE_PWM for 40 ms, which rotates the chassis 2.5-7.8 degrees, i.e.
 // under ~1 cm of wheel travel), so the robot can never overshoot the target by
 // more than one small step.
-#define BACKOFF_PULSE_PWM      140
+#define BACKOFF_PULSE_PWM      TURN_NUDGE_PWM
 #define BACKOFF_PULSE_MS       40
 #define BACKOFF_SETTLE_MS      200
 // Hard caps: at most this many pulses, and never more than this much further

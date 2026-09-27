@@ -10,11 +10,14 @@ typedef struct {
     uint8_t timed_out;
     uint8_t recal_ok;          // did the post-turn gyro recalibration succeed
 
-    // Signed error after the FIRST arrival and settle, before any further
-    // control pass, tenths of a degree. Positive = short of the target,
-    // negative = past it. Near zero means the speed profile is doing its job;
-    // a consistent sign means TURN_CTL_DECEL_DPS2 / TURN_CTL_MIN_DPS want
-    // tuning (see config.h). nudges_used counts the extra control passes.
+    // Signed residual error measured right after the kick/sweep/brake/settle
+    // phases, BEFORE any closed-loop nudging -- i.e. what the fixed
+    // TURN_STOP_MARGIN_DEG early-stop actually produced this run, tenths of a
+    // degree. Positive = undershot the target (coast didn't carry it far
+    // enough, needs more rotation the same direction). Negative = overshot
+    // (coast carried it past target, needs a reverse nudge). This is what to
+    // watch to tell whether the "stop early, let it coast the rest" guess is
+    // running consistently high or low.
     int32_t initial_error_tenths;
 
     // Largest |yaw rate| seen during the turn, raw LSB. At +/-500 dps the
@@ -43,9 +46,9 @@ typedef struct {
     int32_t coast_ms;
 
     // Signed error STILL REMAINING when the correction loop gave up, tenths of
-    // a degree, and whether it got inside TURN_DEADBAND_TENTHS at all.
+    // a degree, and whether it got inside TURN_DEADBAND_DEG at all.
     //
-    // Without these, a turn that runs out of control passes while still out of
+    // Without these, a turn that exhausts TURN_MAX_NUDGES while still out of
     // deadband reports achieved_tenths and timed_out=0 -- indistinguishable
     // from success. A measured run used all 5 nudges on 3 of 6 turns starting
     // ~40 degrees out, so the budget was one bad turn from running dry.
