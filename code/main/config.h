@@ -701,6 +701,15 @@
 // Tune by protractor: new = old * (commanded_angle / measured_angle). Every
 // turn in both runs inherits this number, and a turn that lands well off 90
 // puts run 2 in a corridor the stored route does not describe.
+//
+// Easiest measurement: while the robot is ARMED (waiting for the button) the
+// log prints "spin-cal hdg10=N" every 2 s. Turn the robot by hand exactly
+// 4 full turns (1440 degrees) in place, lined up with a straight edge at
+// start and end, and read the change in hdg10 (tenths). Then
+//     new = 65500 * |change| / 14400
+// e.g. a change of 14760 (gyro reads 2.5% high) -> 67137. The datasheet
+// allows +/-3%, which is 2.7 degrees on every 90 -- more than the nudges'
+// 0.5 degree deadband, and always the same sign.
 #define GYRO_LSB_MS_PER_DEGREE 65500L
 
 // ---------------------------------------------------------------------------

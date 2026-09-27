@@ -62,6 +62,7 @@ static wm_state_t s_state = WM_STARTUP;
 static uint32_t   s_entered = 0;
 static uint32_t   s_leg_started = 0;
 static uint32_t   s_run_started = 0;
+static uint32_t   s_cal_print_ms = 0;   // armed: last gyro-scale readout
 
 static uint8_t    s_exploring = 1;      // 0 = replaying a saved route
 static uint8_t    s_degraded  = 0;      // replay failed; finishing on left-hand
@@ -319,6 +320,19 @@ void Solver_Tick(const tick_ctx_t *t) {
 
     case WM_ARMED:
         Motors_Stop();
+        // GYRO SCALE CHECK. The heading keeps integrating while armed, so
+        // print it: note the number, turn the robot BY HAND exactly N full
+        // turns (line an edge of the chassis up with a straight line on the
+        // floor, and turn slowly -- under half a turn a second), put it down
+        // aligned again, note the number. Then
+        //   GYRO_LSB_MS_PER_DEGREE_new = old * (hdg change) / (N * 3600)
+        // using the change in tenths. The MPU-6050's scale is only good to
+        // +/-3%, and every turn -- however precisely nudged -- inherits it.
+        if ((millis() - s_cal_print_ms) >= 2000UL) {
+            s_cal_print_ms = millis();
+            Debug_KVF("spin-cal hdg10", Heading_DegreesTenths());
+            Debug_NL();
+        }
         if (Panel_ButtonHeld()) {
             // Long press: throw the route away and explore again. Checked
             // before the short press, and only one of the two can be latched.
