@@ -201,6 +201,8 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
     Motors_Pivot(cw, TURN_PWM);
     while (abs32(Heading_Raw()) < stop_at) {
         if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
+        // Gyro gone: the heading is frozen, so the sweep would never end.
+        if (!MPU6050_Healthy()) { res->timed_out = 1; break; }
         turn_sample(&next_ms);
     }
     turn_trace("sweep");
@@ -240,6 +242,7 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
 
         if (abs32(err) <= deadband) break;
         if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
+        if (!MPU6050_Healthy()) { res->timed_out = 1; break; }
 
         err_deg_tenths = (abs32(err) * 10L) / GYRO_LSB_MS_PER_DEGREE;
         nudge_ms = (uint16_t)((err_deg_tenths * TURN_NUDGE_MS_PER_DEG) / 10L);

@@ -754,6 +754,20 @@
 // same sign on every turn. 65500 * 14227 / 14400 = 64711.
 #define GYRO_LSB_MS_PER_DEGREE 64711L
 
+// I2C FAILURES (see i2c.c / mpu6050.c).
+// Longest any single I2C step may wait. One byte at 100 kHz takes ~90 us, so
+// 1 ms only ever expires on a bus that is really stuck -- and a failed
+// transaction stops at its first failure, so a dead bus costs ~1 ms a read.
+#define I2C_TIMEOUT_US         1000
+// While reads keep failing: clear the bus and re-wake the sensor this often.
+#define GYRO_RECOVER_INTERVAL_MS 20
+// Failing continuously for this long means the gyro is gone, not glitching:
+// the solver stops the robot. Shorter dropouts ride on the last good reading.
+// 100 ms is 5 control ticks; at the ~40 cm/s cruise that is ~4 cm driven
+// without rate damping, and while pivoting it is where a turn would otherwise
+// sweep on uncounted.
+#define GYRO_FAIL_MS           100
+
 // ---------------------------------------------------------------------------
 //  14. RUN SAFETY
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@
 #include "wallmem.h"
 #include "panel.h"
 #include "debug.h"
+#include "mpu6050.h"
 
 // ============================================================================
 //  THE TWO-RUN SOLVER: wall follower with memory.
@@ -312,6 +313,20 @@ void Solver_Tick(const tick_ctx_t *t) {
         Debug_P("*** RUN LIMIT: this run has been moving for over ");
         Debug_Int((int32_t)(MAX_RUN_MS / 1000UL));
         Debug_P(" s -- stopped.\r\n");
+        Debug_Flush();
+        enter(WM_FAULT);
+        return;
+    }
+
+    // Gyro gone (reads failing for GYRO_FAIL_MS, see mpu6050.c). Every turn and
+    // all straight-line damping run on it, so stop rather than drive blind.
+    // Shorter dropouts ride on the last good reading and never get here.
+    if (s_state >= WM_STARTUP && s_state <= WM_RECOVER && !MPU6050_Healthy()) {
+        Drive_Stop();
+        Motors_Stop();
+        Debug_P("*** GYRO LOST: no I2C reply for ");
+        Debug_Int((int32_t)GYRO_FAIL_MS);
+        Debug_P(" ms -- stopped. Check the MPU6050 wires, then power-cycle.\r\n");
         Debug_Flush();
         enter(WM_FAULT);
         return;

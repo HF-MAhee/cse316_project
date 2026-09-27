@@ -92,8 +92,8 @@ int main(void) {
 
     Solver_Begin();
 
-    // WATCHDOG. Every I2C wait in i2c.c is unbounded, so a glitch on the gyro
-    // bus parks the CPU for good -- and the motors do NOT stop: Timer1 keeps
+    // WATCHDOG. The I2C waits used to be unbounded (they now time out, see
+    // i2c.c), and any hang parks the CPU for good -- the motors do NOT stop: Timer1 keeps
     // generating the last PWM and the direction pins hold. The robot then
     // drives (or pivots) blind with the log gone silent, which is exactly how
     // it hit the front wall with the last row reading F=40 and no reset
