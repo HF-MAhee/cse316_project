@@ -14,6 +14,9 @@ static int32_t abs32(int32_t v) { return (v < 0) ? -v : v; }
 // Largest |yaw rate| seen in the current turn, raw LSB. Reset per turn.
 static int32_t s_peak_rate = 0;
 
+// Signed yaw rate of the latest turn_sample(), raw LSB (positive = left).
+static int16_t s_last_rate = 0;
+
 // Per-sample streaming (turn-debug mode only) and coast measurement state.
 static uint8_t  s_in_settle    = 0;   // inside settle_tracked()
 static uint32_t s_settle_t0    = 0;
@@ -48,6 +51,7 @@ static void turn_sample(uint32_t *next_ms) {
     // Track the peak rate so gyro clipping is visible. Done in int32 because
     // negating INT16_MIN would overflow.
     r = Gyro_Rate(g.z);
+    s_last_rate = (int16_t)r;
 
     if (r < 0) r = -r;
     if (r > s_peak_rate) s_peak_rate = r;
@@ -60,35 +64,6 @@ static void turn_sample(uint32_t *next_ms) {
     }
 
     *next_ms += TURN_TICK_MS;
-}
-
-// Drive the pivot for a fixed duration, still integrating. Used for the kick,
-// the brake and each correction nudge -- so no rotation happens uncounted.
-static void pulse_tracked(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_ms) {
-    uint32_t t0 = millis();
-    Motors_Pivot(cw, pwm);
-    while ((millis() - t0) < ms) turn_sample(next_ms);
-}
-
-// Same, but ramps up to pwm across the pulse instead of stepping to it.
-// Used ONLY for the kick. A pivot kick is the single largest current transient
-// the firmware asks for -- both motors stalled, driven in opposite directions,
-// no back-EMF -- and every failed run in the early dead-end test logs reset at exactly
-// this point with the brown-out flag set. Spreading the same impulse over
-// TURN_KICK_MS roughly halves the peak draw.
-static void pulse_ramped(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_ms) {
-    uint32_t t0 = millis();
-    uint32_t el;
-    Motors_Pivot(cw, MOTOR_MIN_PWM);
-    while ((el = millis() - t0) < ms) {
-        Motors_Pivot(cw, (uint8_t)(MOTOR_MIN_PWM +
-            (((uint32_t)(pwm - MOTOR_MIN_PWM) * el) / ms)));
-        // Dense rail sampling through the pivot kick -- the single largest
-        // current draw in the firmware, and where every logged brown-out hit.
-        // The per-tick sampler is far too slow to catch a dip this brief.
-        Power_Task();
-        turn_sample(next_ms);
-    }
 }
 
 // One straight-back pulse, still integrating the heading.
@@ -165,132 +140,148 @@ static uint8_t creep_back(uint8_t max_pulses, uint16_t stop_front_cm, uint16_t m
     return k;
 }
 
+static uint16_t isqrt32(uint32_t x) {
+    uint32_t r = 0, bit = 1UL << 30;
+    while (bit > x) bit >>= 2;
+    while (bit) {
+        if (x >= r + bit) { x -= r + bit; r = (r >> 1) + bit; }
+        else                r >>= 1;
+        bit >>= 2;
+    }
+    return (uint16_t)r;
+}
+
+// Signed pivot command: positive turns in the requested direction, negative
+// the other way (braking, or backing out of an overshoot). Anything below the
+// motor floor is not a usable command -- coast instead of buzzing.
+static void drive_pivot(int16_t u, uint8_t cw) {
+    if (u >= (int16_t)MOTOR_MIN_PWM)       Motors_Pivot(cw,  (uint8_t)u);
+    else if (u <= -(int16_t)MOTOR_MIN_PWM) Motors_Pivot(!cw, (uint8_t)(-u));
+    else                                   Motors_Stop();
+}
+
+// One turn, closed loop on the gyro rate the whole way. See "HOW A TURN
+// WORKS NOW" in config.h for the control law and how to tune it.
 static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t *res) {
-    const uint8_t cw = (dir == TURN_RIGHT) ? 1 : 0;
-    const int32_t target   = (target_tenths * GYRO_LSB_MS_PER_DEGREE) / 10L;
-    const int32_t deadband = (int32_t)TURN_DEADBAND_DEG * GYRO_LSB_MS_PER_DEGREE;
-    int32_t stop_at = target - ((int32_t)TURN_STOP_MARGIN_DEG * GYRO_LSB_MS_PER_DEGREE);
+    const uint8_t cw     = (dir == TURN_RIGHT) ? 1 : 0;
+    const int32_t target = (target_tenths * GYRO_LSB_MS_PER_DEGREE) / 10L;
+    const int32_t arrive = ((int32_t)TURN_CTL_ARRIVE_TENTHS * GYRO_LSB_MS_PER_DEGREE) / 10L;
+    const int32_t accept = ((int32_t)TURN_DEADBAND_TENTHS   * GYRO_LSB_MS_PER_DEGREE) / 10L;
 
     uint32_t next_ms = millis() + TURN_TICK_MS;
     uint32_t t_start = millis();
-    uint8_t  i;
-    uint8_t  no_progress = 0;   // consecutive nudges that did not close the error
-    uint8_t  backed_off  = 0;   // the one straight back-off has been used
-
-    if (stop_at < 0) stop_at = 0;
+    int16_t  u        = 0;      // current command, PWM, signed (see drive_pivot)
+    uint8_t  boost    = 0;      // breakaway boost, PWM
+    uint16_t stall_ms = 0;      // time spent driven but not moving
+    uint8_t  stops    = 0;      // times it has arrived and settled
+    uint8_t  backed_off = 0;
+    uint8_t  tick     = 0;
 
     Heading_Reset();
     res->timed_out   = 0;
-    res->nudges_used = 0;
+    res->nudges_used = 0;       // here: extra control passes after a settle
+    res->initial_error_tenths = 0;
+    res->coast_ms    = 0;
     s_peak_rate      = 0;
+    s_last_rate      = 0;
 
-    // --- PHASE 1: kickstart, tracked -------------------------------------
-    // A pivot skids the tyres sideways, so it needs more breakaway torque
-    // than rolling straight. Counted, because with the wheels turning in
-    // opposite directions this kick is real rotation.
-    Power_SetActivity(ACT_TURN_KICK);
-#if KICK_RAMP
-    pulse_ramped(cw, TURN_KICK_PWM, TURN_KICK_MS, &next_ms);
-#else
-    pulse_tracked(cw, TURN_KICK_PWM, TURN_KICK_MS, &next_ms);
-#endif
-    turn_trace("kick");
-
-    // --- PHASE 2: slow sweep, stopping early on purpose -------------------
     Power_SetActivity(ACT_TURN_SWEEP);
-    Motors_Pivot(cw, TURN_PWM);
-    while (abs32(Heading_Raw()) < stop_at) {
-        if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
-        turn_sample(&next_ms);
-    }
-    turn_trace("sweep");
+    for (;;) {
+        // Progress and speed IN THE TURNING DIRECTION (positive = toward the
+        // target), whichever way the gyro counts.
+        const int32_t prog  = (dir == TURN_RIGHT) ? -Heading_Raw() : Heading_Raw();
+        const int32_t err   = target - prog;
+        const int32_t w10   = ((int32_t)((dir == TURN_RIGHT) ? -s_last_rate : s_last_rate)
+                               * 10000L) / GYRO_LSB_MS_PER_DEGREE;       // tenths of deg/s
+        int32_t wd10, want;
 
-    // --- PHASE 3: active brake, tracked -----------------------------------
-    Power_SetActivity(ACT_TURN_BRAKE);
-    pulse_tracked(!cw, TURN_BRAKE_PWM, TURN_BRAKE_MS, &next_ms);
-    turn_trace("brake");
-
-    // --- PHASE 4: settle, still counting the coast -------------------------
-    settle_tracked(TURN_SETTLE_MS, &next_ms);
-    turn_trace("settle");
-    // Coast from the main sweep only -- later settles (after each nudge) would
-    // overwrite s_coast_ms, and it is this one that TURN_SETTLE_MS is sized
-    // against.
-    res->coast_ms = s_coast_ms;
-
-    // Residual error from the fixed early-stop margin alone, before any
-    // closed-loop nudging. Positive = undershot, negative = overshot -- see
-    // turn.h. This is the number that tells you whether TURN_STOP_MARGIN_DEG
-    // is guessing the coast right, not just that *some* correction happened.
-    res->initial_error_tenths =
-        ((target - abs32(Heading_Raw())) * 10L) / GYRO_LSB_MS_PER_DEGREE;
-
-    // --- PHASE 5: closed-loop correction ----------------------------------
-    // The chassis is stopped and the accumulator now holds the true angle.
-    // Nudge in whichever direction shrinks the error (cw if undershot, the
-    // reverse if overshot), then re-measure. The nudge LENGTH scales with
-    // the remaining error instead of firing the same fixed pulse regardless
-    // of size -- a fixed pulse either crawls toward a large gap or blows
-    // through a tiny one by the same amount, which oscillates instead of
-    // converging.
-    for (i = 0; i < TURN_MAX_NUDGES; i++) {
-        int32_t err = target - abs32(Heading_Raw());
-        int32_t err_deg_tenths;
-        uint16_t nudge_ms;
-
-        if (abs32(err) <= deadband) break;
         if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
 
-        err_deg_tenths = (abs32(err) * 10L) / GYRO_LSB_MS_PER_DEGREE;
-        nudge_ms = (uint16_t)((err_deg_tenths * TURN_NUDGE_MS_PER_DEG) / 10L);
-        if (nudge_ms < TURN_NUDGE_MS_MIN) nudge_ms = TURN_NUDGE_MS_MIN;
-        if (nudge_ms > TURN_NUDGE_MS_MAX) nudge_ms = TURN_NUDGE_MS_MAX;
-
-        Power_SetActivity(ACT_TURN_NUDGE);
-        pulse_tracked((err > 0) ? cw : !cw, TURN_NUDGE_PWM, nudge_ms, &next_ms);
-        settle_tracked(TURN_SETTLE_MS, &next_ms);
-        res->nudges_used++;
-
-#if TURN_TRACE
-        // Which way this nudge pushed and how long, then where it landed.
-        // Nudges alternating sign run after run means the settle is ending
-        // before the chassis has actually stopped coasting.
-        Debug_P("  T nudge");
-        Debug_Int(res->nudges_used);
-        if (err > 0) Debug_P(" fwd "); else Debug_P(" rev ");
-        Debug_KVF("ms", (int32_t)nudge_ms);
-        Debug_KVF("hdg10", Heading_DegreesTenths());
-        Debug_NL();
-#endif
-
-        // PINNED? A nudge that does not bring the error down by at least
-        // TURN_STUCK_PROGRESS_DEG10 means something is stopping the chassis
-        // from rotating -- in practice a corner against a wall. In the 13:06
-        // dead-end run four 40 ms nudges in a row moved it 1.4, -3.8, 1.6 and
-        // 0.3 degrees and the turn gave up 21 degrees short. Two of those in a
-        // row: back straight off once, which frees the corner, and carry on.
-        {
-            int32_t after    = abs32(target - abs32(Heading_Raw()));
-            int32_t progress = abs32(err) - after;
-            // Only a full-length nudge counts: a short one near the target
-            // can legitimately fail to break the tyres loose.
-            if (nudge_ms >= TURN_NUDGE_MS_MAX &&
-                progress * 10L < (int32_t)TURN_STUCK_PROGRESS_DEG10 * GYRO_LSB_MS_PER_DEGREE) {
-                no_progress++;
-            } else {
-                no_progress = 0;
+        // --- ARRIVED? stop, settle (still integrating), then judge --------
+        if (abs32(err) <= arrive && abs32(w10) <= (int32_t)TURN_CTL_STOP_DPS * 10) {
+            int32_t settled;
+            Motors_Stop();
+            u = 0; boost = 0; stall_ms = 0;
+            settle_tracked(TURN_CTL_SETTLE_MS, &next_ms);
+            stops++;
+            settled = target - ((dir == TURN_RIGHT) ? -Heading_Raw() : Heading_Raw());
+            if (stops == 1) {
+                res->initial_error_tenths = (settled * 10L) / GYRO_LSB_MS_PER_DEGREE;
+                res->coast_ms = s_coast_ms;
             }
-            if (no_progress >= 2 && !backed_off) {
-                backed_off  = 1;
-                no_progress = 0;
-                creep_back(TURN_UNSTICK_PULSES, 0, 0, &next_ms, 0);
-#if TURN_TRACE
-                Debug_P("  T pinned, backed off");
-                Debug_KVF(" hdg10", Heading_DegreesTenths());
-                Debug_NL();
-#endif
-            }
+            turn_trace("stop");
+            if (abs32(settled) <= accept || stops > TURN_CTL_MAX_RESTARTS) break;
+            res->nudges_used++;
+            continue;
         }
+
+        // --- allowed speed: what can still be stopped in the room left ----
+        {
+            uint32_t e10 = (uint32_t)((abs32(err) * 10L) / GYRO_LSB_MS_PER_DEGREE);
+            int32_t  wd  = isqrt32(((uint32_t)TURN_CTL_DECEL_DPS2 * e10) / 5UL);  // deg/s
+            if (wd > TURN_CTL_MAX_DPS) wd = TURN_CTL_MAX_DPS;
+            if (wd < TURN_CTL_MIN_DPS) wd = TURN_CTL_MIN_DPS;
+            wd10 = (err >= 0) ? wd * 10 : -wd * 10;
+        }
+
+        // --- control law, in the frame of the allowed direction -----------
+        {
+            const int32_t sgn = (wd10 >= 0) ? 1 : -1;
+            const int32_t e   = sgn * (wd10 - w10);          // >0: too slow, <0: too fast
+            const int32_t moving = abs32(w10) >= (int32_t)TURN_CTL_STALL_DPS * 10;
+
+            if (e >= 0) {
+                // Too slow: drive. Breakaway boost builds while stuck.
+                if (!moving && abs32(u) >= TURN_CTL_PWM_FLOOR) {
+                    if (boost + TURN_CTL_BOOST_STEP <= TURN_CTL_BOOST_MAX) boost += TURN_CTL_BOOST_STEP;
+                    stall_ms += TURN_TICK_MS;
+                } else {
+                    if (boost) boost--;
+                    stall_ms = 0;
+                }
+                want = TURN_CTL_PWM_FLOOR + boost +
+                       (e * TURN_CTL_KP_NUM) / (TURN_CTL_KP_DEN * 10L);
+            } else {
+                // Too fast: reverse torque in proportion. No floor -- a small
+                // excess just coasts off.
+                if (boost) boost--;
+                stall_ms = 0;
+                want = (e * TURN_CTL_KB_NUM) / (TURN_CTL_KB_DEN * 10L);   // negative
+            }
+            want *= sgn;
+            if (want >  TURN_CTL_PWM_MAX) want =  TURN_CTL_PWM_MAX;
+            if (want < -TURN_CTL_PWM_MAX) want = -TURN_CTL_PWM_MAX;
+        }
+
+        // --- slew-limit, apply ---------------------------------------------
+        if (want > u + TURN_CTL_SLEW)      u = (int16_t)(u + TURN_CTL_SLEW);
+        else if (want < u - TURN_CTL_SLEW) u = (int16_t)(u - TURN_CTL_SLEW);
+        else                               u = (int16_t)want;
+        drive_pivot(u, cw);
+
+        // --- pinned: driven hard, not moving -------------------------------
+        if (stall_ms >= TURN_CTL_PINNED_MS && boost >= TURN_CTL_BOOST_MAX && !backed_off) {
+            backed_off = 1;
+            Motors_Stop();
+            u = 0; boost = 0; stall_ms = 0;
+            creep_back(TURN_UNSTICK_PULSES, 0, 0, &next_ms, 0);
+            Power_SetActivity(ACT_TURN_SWEEP);
+            turn_trace("pinned, backed off");
+            continue;
+        }
+
+#if TURN_TRACE && TURN_TRACE_PROFILE
+        if ((++tick & 7) == 0) {
+            Debug_KVF("  T hdg10", Heading_DegreesTenths());
+            Debug_KVF("wd", wd10 / 10);
+            Debug_KVF("w", w10 / 10);
+            Debug_KVF("u", u);
+            Debug_NL();
+        }
+#else
+        (void)tick;
+#endif
+        turn_sample(&next_ms);
     }
 
     Motors_Stop();
@@ -300,14 +291,14 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
     {
         int32_t left = target - abs32(Heading_Raw());
         res->final_error_tenths = (left * 10L) / GYRO_LSB_MS_PER_DEGREE;
-        res->converged = (abs32(left) <= deadband) ? 1 : 0;
+        res->converged = (abs32(left) <= accept) ? 1 : 0;
         // Undershooting a RIGHT turn leaves the chassis LEFT of where it
         // should point (positive); undershooting a LEFT turn leaves it right.
         res->residual_raw = (dir == TURN_RIGHT) ? left : -left;
     }
 
     // Direction check. Convention: positive gyro Z = turning LEFT, so a right
-    // turn must accumulate negative. Everything above works on |heading|, so
+    // turn must accumulate negative. The result above works on |heading|, so
     // without this a turn that went the wrong way reports a clean success.
     {
         int32_t signed_hdg = Heading_Raw();
