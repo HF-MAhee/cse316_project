@@ -119,8 +119,13 @@ static uint16_t front_still(void) {
     uint16_t v[3], t;
     uint8_t  k;
     for (k = 0; k < 3; k++) {
+        uint8_t tries = 0;
         if (k) Timer_WaitMs(30);            // let the last echo die away
-        v[k] = Sonar_PingNow(SONAR_FRONT);
+        // After a no-echo ping the sensor stays busy for ~38 ms; wait it out.
+        while ((v[k] = Sonar_PingNow(SONAR_FRONT)) == SONAR_BUSY && ++tries < 8) {
+            Timer_WaitMs(10);
+        }
+        if (v[k] == SONAR_BUSY)      v[k] = SONAR_NO_ECHO;
         if (v[k] == SONAR_TOO_CLOSE) v[k] = 0;
     }
     if (v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }

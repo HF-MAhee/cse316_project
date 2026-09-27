@@ -188,13 +188,27 @@
 // collide, and turn straight into the wall.
 #define SONAR_TOO_CLOSE        1
 
+// Returned by a ping that could not be taken because the sensor was still
+// busy with the previous one (its ECHO line already high at trigger time).
+// Never stored as a distance. See ping() and Sonar_Task() in sonar.c.
+#define SONAR_BUSY             998
+
 // Physical ambiguity: below ~3 cm the echo can return before the sensor
 // finishes transmitting, so a very near wall often produces a timeout that
 // is indistinguishable, at the ping level, from open space. Disambiguate
 // with history instead: if the previous good reading was within this
 // distance, a sudden loss of echo means the wall got CLOSER, not that it
 // vanished. Walls do not disappear in 60 ms.
-#define SONAR_NEAR_LATCH_CM    12
+//
+// Was 12, which is inside the NORMAL band: centred, a side sonar reads ~15,
+// so a robot only 3 cm off centre reads 12. An opening appearing beside it
+// (nothing within 70 cm -> no echo) was then latched as a wall 3 cm away:
+// the opening was hidden, and drive.c's emergency ("COLLISION COURSE")
+// steered AWAY from the opening. The echo is only lost below ~3 cm, and in one
+// 60 ms refresh a wall closes by well under 3 cm (the robot's sideways speed
+// is a fraction of its 30-45 cm/s), so only a reading within 6 cm can be a
+// wall that has since got too close to echo.
+#define SONAR_NEAR_LATCH_CM    6
 // ...but for at most this many lost echoes in a row (each sensor pings every
 // 60 ms, so 3 = 180 ms). After that a lost echo means what it says: nothing
 // in range. Without the limit the latch never let go -- see Sonar_Task().

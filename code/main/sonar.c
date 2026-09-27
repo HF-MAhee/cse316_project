@@ -84,6 +84,14 @@ void Sonar_Init(void) {
 static uint16_t ping(sonar_t *p) {
     uint32_t t0, echo_start, dur;
 
+    // STILL BUSY? When nothing echoes, an HC-SR04 holds ECHO high for ~38 ms
+    // (some clones much longer) -- far past the ~4 ms this code waits before
+    // calling it NO_ECHO. Trigger it again inside that window and the sensor
+    // ignores the trigger, the "wait for ECHO to rise" below passes at once
+    // because ECHO never fell, and the tail of the OLD pulse is timed as a
+    // new distance: a short, made-up reading. Take no reading instead.
+    if (SONAR_PIN & (1 << p->echo_bit)) return SONAR_BUSY;
+
     SONAR_PORT &= ~(1 << p->trig_bit);
     _delay_us(2);                       // permitted exception: sub-tick pulse
     SONAR_PORT |=  (1 << p->trig_bit);
@@ -124,6 +132,14 @@ void Sonar_Task(void) {
     sonar_t *p = &s[s_turn];
     uint16_t v = ping(p);
     uint8_t  implausible_jump = 0;
+
+    // Busy sensor. Here the same sensor was last triggered a full round
+    // (3 ticks, 60 ms) ago, so ECHO still being high means no echo came back
+    // in 60 ms -- nothing within range, exactly what NO_ECHO means. Record it
+    // as that (never as the tail of the old pulse, and never by skipping the
+    // sample: a skipped sample would freeze the last reading and could hide
+    // an opening for as long as the sensor stays busy).
+    if (v == SONAR_BUSY) v = SONAR_NO_ECHO;
 
     // --- Disambiguate a lost echo -----------------------------------------
     // Below ~3 cm the echo can return while the sensor is still transmitting,
