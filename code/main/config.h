@@ -115,14 +115,20 @@
 // 30 is the conservative figure for a leg that starts from rest. It also
 // drifts with battery charge -- re-measure on a fresh pack.
 //
-// ESTIMATED for DRIVE_BASE_PWM 55, NOT MEASURED. 60 gave ~34 cm/s; speed is
-// roughly proportional to how far the PWM sits above the friction floor
-// (~45), so 55 should give about two thirds of that: ~22. Measure it from the
-// next log -- with TELEMETRY_INTERVAL_MS at 100 each CSV row is 0.1 s apart,
-// so speed = (drop in F over a steady stretch of rows) / (rows x 0.1 s) -- and
-// set it here. APPROACH_TIME_MS (how far past an opening the robot drives
-// before turning, when there is no front wall to stop it) depends on it.
-#define TRAVEL_SPEED_CMS       22   // ESTIMATE for PWM 55 -- measure
+// Re-measured 27 Sep. Each CSV row is 0.1 s apart, so speed = drop in F over
+// a steady stretch / (rows x 0.1 s):
+//   usart_20260927_161733 (PWM 60): 54 -> 30 cm in 0.7 s   = 34 cm/s
+//   usart_20260927_211222 (PWM 55): 56 -> 29 cm in 0.7 s   = 39 cm/s
+//                                   66 -> 28 cm in 0.9 s   = 42 cm/s
+//                                   55 -> 25 cm in 0.7 s   = 43 cm/s
+// The lower base did not make it slower: the steering sits at its limit most
+// of the time, and whenever the inner wheel would fall under MOTOR_MIN_PWM the
+// outer one is raised by the same amount (logged 45/89, a mean of ~67). So
+// the real speed is set by the steering, not by DRIVE_BASE_PWM alone.
+// 40 is the middle of 34-43: the approach then lands within about +/-5 cm.
+// (The 22 that was here was an estimate for PWM 55, about half the real
+// speed, which made every approach drive ~70 cm instead of 35.)
+#define TRAVEL_SPEED_CMS       40   // measured, 34-43 across runs
 
 // ---------------------------------------------------------------------------
 //  3. MAZE GEOMETRY                       [MATCH TO YOUR BUILT MAZE]
@@ -275,13 +281,10 @@
 // walls. Slower means the same angular correction translates into less
 // lateral overshoot.
 //
-// Lowered again, 60 -> 55 (27 Sep): at 60 the chassis cruised at ~34 cm/s on a
-// fresh 3S pack (usart_20260927_161733: front 54 -> 30 cm in 0.7 s), which is
-// most of a 40 cm cell per second. Not lower: the measured stall floor from
-// rest is ~60, so 55 relies on the drive-off kick to get rolling and on
-// rolling friction being lower than static; below ~55 the chassis risks
-// stopping dead mid-corridor, especially as the pack runs down.
-#define DRIVE_BASE_PWM         55
+// 55 was tried (27 Sep) and changed nothing useful: the steering limit plus
+// the stall-floor lift kept the mean near 67 anyway (see TRAVEL_SPEED_CMS),
+// and 55 is under the ~60 stall floor from rest. Back to 60.
+#define DRIVE_BASE_PWM         60
 
 // Breakaway kick to overcome static friction on start.
 #define KICK_PWM               120  // you lowered this from 160 to protect a
@@ -419,11 +422,7 @@
 // only matters if DRIVE_BASE_PWM is lowered close to MOTOR_MIN_PWM: with a
 // base of 48 and a floor of 45, nearly every correction triggered a lift and
 // the logged mean came back at cruise speed (50.6 / 52.8 / 56.2 against 48).
-//
-// 50, not 58, since DRIVE_BASE_PWM went to 55: at 58 the cruise itself fell
-// under it, capping steering at 55 - MOTOR_MIN_PWM = 10 PWM instead of ~20 --
-// halving the very wall correction the lower speed is meant to help.
-#define DRIVE_MEAN_PRESERVE_BELOW  50
+#define DRIVE_MEAN_PRESERVE_BELOW  58
 
 // YAW GOVERNOR.
 // Hard ceiling on how fast the chassis may rotate while centring. Beyond
@@ -778,7 +777,7 @@
 // Longest a single straight leg may run before forcing a junction decision.
 // Safety net for walls the sonar misses entirely (angled/soft surfaces); the
 // solver treats a timeout as a dead end, through the same decision path.
-#define MAX_LEG_MS             15000UL   // 160 cm at ~16 cm/s worst case, plus margin
+#define MAX_LEG_MS             10000UL
 
 // Longest a single RUN may keep moving, counted from its button press. Time
 // spent armed and waiting between runs does not count. A run that hits this
