@@ -46,7 +46,7 @@ typedef struct {
     int32_t coast_ms;
 
     // Signed error STILL REMAINING when the correction loop gave up, tenths of
-    // a degree, and whether it got inside TURN_DEADBAND_DEG at all.
+    // a degree, and whether it got inside TURN_DEADBAND_TENTHS at all.
     //
     // Without these, a turn that exhausts TURN_MAX_NUDGES while still out of
     // deadband reports achieved_tenths and timed_out=0 -- indistinguishable
