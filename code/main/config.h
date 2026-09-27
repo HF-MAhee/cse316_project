@@ -568,10 +568,11 @@
 
 // PINNED TURN. Two full-length nudges in a row that close the error by less
 // than this (tenths of a degree) mean the chassis cannot rotate -- a corner is
-// against a wall. The turn then reverses straight for TURN_UNSTICK_MS (about
-// 4 cm), once, and carries on nudging. See execute_single() in turn.c.
+// against a wall. The turn then creeps straight back TURN_UNSTICK_PULSES
+// back-off pulses (see BACKOFF_PULSE_MS below), once, and carries on nudging.
+// See execute_single() in turn.c.
 #define TURN_STUCK_PROGRESS_DEG10  5
-#define TURN_UNSTICK_MS            150
+#define TURN_UNSTICK_PULSES        2
 #define TURN_TIMEOUT_MS        7000 // safety: abort a turn that never finishes
 
 // Do a 180 as two 90s with a settle between. Usually more accurate than one
@@ -584,14 +585,40 @@
 // ahead of it, so the second 90 clears that wall only if the front sonar
 // reads a few cm or more -- and in a 40 cm corridor a robot even 3 cm off
 // centre reads less. The robot then drove its front corner into that wall
-// instead of pivoting. So: measure, and back straight off until the wall is
-// at least this far away. 8 cm is the figure the older dead-end handler used.
-#define UTURN_MID_FRONT_CM     8
-#define UTURN_BACKOFF_PWM      DRIVE_BASE_PWM
-// Hard cap on that reverse. The rear corners sit ~7 cm behind the axle, and
-// the opposite wall is ~40 cm from the one ahead, so ~300 ms (7-9 cm) is as
-// far as it is safe to go without looking behind -- there is no rear sonar.
-#define UTURN_BACKOFF_MAX_MS   300
+// instead of pivoting. So: measure, and creep straight back.
+//
+// HOW FAR BACK, AND NO FURTHER. Facing across the corridor, the axle is
+// F + SONAR_TO_AXLE_CM from the wall ahead and the rear corners reach 10.6 cm
+// behind it. There is no rear sonar, so the wall behind is only known from the
+// geometry: reversing moves the problem from the front corners to the rear
+// ones. The corners are not symmetric -- front 17 cm from the axle, rear
+// 10.6 -- so the safest spot is not the centre line but where both have the
+// same room: axle at (CORRIDOR_WIDTH + 17 - 11) / 2 = 23 cm from the wall
+// ahead, i.e. the front sonar reading 8 cm at a 40 cm corridor. There each
+// corner clears its wall by ~6 cm. The robot backs off only when it reads
+// less than that, and only up to it.
+#define PIVOT_FRONT_REACH_CM   17
+#define PIVOT_REAR_REACH_CM    11
+#define UTURN_MID_FRONT_CM     ((CORRIDOR_WIDTH_CM + PIVOT_FRONT_REACH_CM - PIVOT_REAR_REACH_CM) / 2 \
+                                - SONAR_TO_AXLE_CM)
+
+// NOT A TIMED REVERSE. At cruise speed (30-45 cm/s) the chassis covers 1-1.4 cm
+// between two pings and coasts on after the motors cut, so "reverse until the
+// sonar says stop" overshoots by more than the whole margin. Instead the
+// back-off is short PULSES from a standstill: one pulse, stop, let it settle,
+// measure, repeat. A pulse is the same strength and length as a turn nudge
+// (TURN_NUDGE_PWM for 40 ms, which rotates the chassis 2.5-7.8 degrees, i.e.
+// under ~1 cm of wheel travel), so the robot can never overshoot the target by
+// more than one small step.
+#define BACKOFF_PULSE_PWM      TURN_NUDGE_PWM
+#define BACKOFF_PULSE_MS       40
+#define BACKOFF_SETTLE_MS      200
+// Hard caps: at most this many pulses, and never more than this much further
+// from the wall than where it started (as measured by the front sonar). From
+// the worst case -- touching the wall ahead -- 6 cm back is the balanced spot
+// above, and the rear corners still have ~6 cm.
+#define UTURN_BACKOFF_MAX_PULSES  6
+#define UTURN_BACKOFF_MAX_CM      6
 
 // Per-phase turn trace: each phase boundary prints the heading it ended at
 // (about 10 short lines per turn, ~250 bytes over ~1.5 s: no risk to the byte

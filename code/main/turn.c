@@ -91,6 +91,15 @@ static void pulse_ramped(uint8_t cw, uint8_t pwm, uint16_t ms, uint32_t *next_ms
     }
 }
 
+// One straight-back pulse, still integrating the heading.
+static void pulse_straight_back(uint32_t *next_ms) {
+    uint32_t t0 = millis();
+    Motors_SetLeft(DIR_REV,  BACKOFF_PULSE_PWM);
+    Motors_SetRight(DIR_REV, BACKOFF_PULSE_PWM);
+    while ((millis() - t0) < BACKOFF_PULSE_MS) turn_sample(next_ms);
+    Motors_Stop();
+}
+
 // Motors off, but keep integrating: the chassis coasts after power is cut and
 // that coast is real rotation.
 static void settle_tracked(uint16_t ms, uint32_t *next_ms) {
@@ -104,34 +113,51 @@ static void settle_tracked(uint16_t ms, uint32_t *next_ms) {
     s_coast_ms  = s_last_move_ms;
 }
 
-// Reverse straight, integrating the heading throughout, then settle. Stops
-// early once the front sonar reads at least stop_front_cm (0 = never look).
-// There is no rear sonar, so max_ms is the only thing limiting how far back
-// it goes -- keep it short. Returns how long it actually reversed, ms.
-static uint32_t reverse_tracked(uint16_t max_ms, uint16_t stop_front_cm, uint32_t *next_ms) {
-    uint32_t t0 = millis();
-    uint32_t el;
-    uint8_t  n = 0;
-
-    Power_SetActivity(ACT_REVERSING);
-    while ((el = millis() - t0) < max_ms) {
-        // Same breakaway ramp as every other start from rest.
-        uint8_t p = (el < TURN_KICK_MS)
-            ? (uint8_t)(MOTOR_MIN_PWM + (((uint32_t)(KICK_PWM - MOTOR_MIN_PWM) * el) / TURN_KICK_MS))
-            : (uint8_t)UTURN_BACKOFF_PWM;
-        Motors_SetLeft(DIR_REV, p);
-        Motors_SetRight(DIR_REV, p);
-        turn_sample(next_ms);
-        // One front ping every 6 samples (~30 ms) -- as often as the echo
-        // allows.
-        if (stop_front_cm && ++n >= 6) {
-            uint16_t v = Sonar_PingNow(SONAR_FRONT);
-            n = 0;
-            if (v != SONAR_NO_ECHO && v != SONAR_TOO_CLOSE && v >= stop_front_cm) break;
-        }
+// Front distance while standing still: median of three fresh pings, in cm.
+// SONAR_TOO_CLOSE comes back as 0 so it compares as "nearer than anything".
+static uint16_t front_still(void) {
+    uint16_t v[3], t;
+    uint8_t  k;
+    for (k = 0; k < 3; k++) {
+        if (k) Timer_WaitMs(30);            // let the last echo die away
+        v[k] = Sonar_PingNow(SONAR_FRONT);
+        if (v[k] == SONAR_TOO_CLOSE) v[k] = 0;
     }
-    settle_tracked(TURN_SETTLE_MS, next_ms);    // stops the motors
-    return el;
+    if (v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
+    if (v[1] > v[2]) { t = v[1]; v[1] = v[2]; v[2] = t; }
+    if (v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
+    return v[1];
+}
+
+// Creep straight back in small pulses from a standstill -- NEVER a timed
+// reverse at speed (see BACKOFF_PULSE_MS in config.h). Each pulse is followed
+// by a full stop and settle, the heading is integrated throughout, and the
+// front sonar is re-measured before every pulse.
+//
+// Stops when the front reads at least stop_front_cm (0 = do not look), when it
+// has backed off max_cm from the first reading (0 = no limit), or after
+// max_pulses. Returns the number of pulses used; *front_out gets the last
+// front reading taken (SONAR_NO_ECHO if it never looked).
+static uint8_t creep_back(uint8_t max_pulses, uint16_t stop_front_cm, uint16_t max_cm,
+                          uint32_t *next_ms, uint16_t *front_out) {
+    uint16_t f0 = SONAR_NO_ECHO, f = SONAR_NO_ECHO;
+    uint8_t  k;
+
+    for (k = 0; k < max_pulses; k++) {
+        if (stop_front_cm) {
+            f = front_still();
+            if (k == 0) f0 = f;
+            if (f != SONAR_NO_ECHO && f >= stop_front_cm) break;
+            if (max_cm && f0 != SONAR_NO_ECHO && f != SONAR_NO_ECHO && f >= f0 + max_cm) break;
+        }
+        Power_SetActivity(ACT_REVERSING);
+        pulse_straight_back(next_ms);
+        settle_tracked(BACKOFF_SETTLE_MS, next_ms);     // motors off, coast counted
+    }
+    if (stop_front_cm && k == max_pulses) f = front_still();   // where the last pulse left it
+    Power_SetActivity(ACT_IDLE);
+    if (front_out) *front_out = f;
+    return k;
 }
 
 static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t *res) {
@@ -252,7 +278,7 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
             if (no_progress >= 2 && !backed_off) {
                 backed_off  = 1;
                 no_progress = 0;
-                reverse_tracked(TURN_UNSTICK_MS, 0, &next_ms);
+                creep_back(TURN_UNSTICK_PULSES, 0, 0, &next_ms, 0);
 #if TURN_TRACE
                 Debug_P("  T pinned, backed off");
                 Debug_KVF(" hdg10", Heading_DegreesTenths());
@@ -308,26 +334,12 @@ void Turn_90(turn_dir_t dir, turn_result_t *res) {
     Turn_Execute(90, dir, res);
 }
 
-// Front distance while standing still: median of three fresh pings, in cm.
-// SONAR_TOO_CLOSE comes back as 0 so it compares as "nearer than anything".
-static uint16_t front_still(void) {
-    uint16_t v[3], t;
-    uint8_t  k;
-    for (k = 0; k < 3; k++) {
-        if (k) Timer_WaitMs(30);            // let the last echo die away
-        v[k] = Sonar_PingNow(SONAR_FRONT);
-        if (v[k] == SONAR_TOO_CLOSE) v[k] = 0;
-    }
-    if (v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
-    if (v[1] > v[2]) { t = v[1]; v[1] = v[2]; v[2] = t; }
-    if (v[0] > v[1]) { t = v[0]; v[0] = v[1]; v[1] = t; }
-    return v[1];
-}
-
 // Between the two halves of a U-turn. The first 90 has left the robot facing
 // what was the side wall on the turning side; if that wall is too close, the
-// second 90 drives the front corner into it. Back straight off until the wall
-// is UTURN_MID_FRONT_CM away (or UTURN_BACKOFF_MAX_MS runs out).
+// second 90 drives the front corner into it. Only when the axle is past the
+// corridor centre line toward that wall, creep straight back in pulses to the
+// centre line and no further: UTURN_MID_FRONT_CM, capped at
+// UTURN_BACKOFF_MAX_PULSES pulses and UTURN_BACKOFF_MAX_CM of travel.
 //
 // side_cm is what that side read BEFORE the turn. It resolves one ambiguity:
 // right up against a wall an HC-SR04 often returns no echo at all, which on
@@ -340,7 +352,8 @@ static uint16_t front_still(void) {
 static int32_t uturn_clearance(turn_dir_t dir, uint16_t side_cm) {
     uint16_t f = front_still();
     uint16_t f_end;
-    uint32_t next_ms, el;
+    uint32_t next_ms;
+    uint8_t  pulses;
     int32_t  h10;
 
     if (f == SONAR_NO_ECHO && side_cm < OPENING_THRESHOLD_CM) f = 0;
@@ -351,14 +364,12 @@ static int32_t uturn_clearance(turn_dir_t dir, uint16_t side_cm) {
         return 0;
     }
 
-    Debug_P("too close, backing off\r\n");
+    Debug_P("past centre, creeping back\r\n");
     next_ms = millis() + TURN_TICK_MS;
-    el = reverse_tracked(UTURN_BACKOFF_MAX_MS, UTURN_MID_FRONT_CM, &next_ms);
-    Power_SetActivity(ACT_IDLE);
-
-    f_end = front_still();
+    pulses = creep_back(UTURN_BACKOFF_MAX_PULSES, UTURN_MID_FRONT_CM, UTURN_BACKOFF_MAX_CM,
+                        &next_ms, &f_end);
     h10 = Heading_DegreesTenths();
-    Debug_KVF("  backed off ms", (int32_t)el);
+    Debug_KVF("  back-off pulses", (int32_t)pulses);
     Debug_KVF("front", (int32_t)f_end);
     Debug_KVF("yaw10", h10);
     Debug_NL();
