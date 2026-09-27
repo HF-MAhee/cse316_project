@@ -77,6 +77,14 @@ static uint8_t s_open_l = 0, s_open_r = 0, s_block_f = 0, s_deadend = 0;
 static uint8_t s_passing = 0;   // decided "straight on" here; ignore this junction until it is behind us
 static uint8_t s_recover_begun = 0;
 
+// See POST_TURN_CELL_MS. s_post_turn: the last pivot was a 90 and no junction
+// has been decided since. s_wall_seen_*: that side has read a wall this leg,
+// so an opening there now has a leading edge the sonar really saw.
+static uint8_t  s_post_turn = 0;
+static uint32_t s_moving_since = 0;    // RECOVER start: the pivot cell, in time
+static uint8_t  s_wall_seen_l = 0, s_wall_seen_r = 0;
+static uint32_t s_approach_ms = APPROACH_TIME_MS;
+
 // Run statistics -- this is what the demo is measured with. "segments" counts
 // junction-to-junction runs, not 40 cm cells: the robot has no encoders, so it
 // genuinely does not know how many cells it crossed, and a number that looked
@@ -94,7 +102,10 @@ static void enter(wm_state_t st) {
 }
 static uint8_t in_state_for(uint32_t ms) { return ((millis() - s_entered) >= ms) ? 1 : 0; }
 
-static void clear_debounce(void) { s_open_l = s_open_r = s_block_f = s_deadend = s_passing = 0; }
+static void clear_debounce(void) {
+    s_open_l = s_open_r = s_block_f = s_deadend = s_passing = 0;
+    s_wall_seen_l = s_wall_seen_r = 0;
+}
 
 static void update_debounce(void) {
     // A side that has not been pinged since the flush at GO still holds the
@@ -108,6 +119,8 @@ static void update_debounce(void) {
     if (Sonar_HasSample(SONAR_RIGHT) && Sonar_IsOpen(SONAR_RIGHT))
                                    { if (s_open_r  < 255) s_open_r++;  } else s_open_r  = 0;
     if (Sonar_FrontBlocked())      { if (s_block_f < 255) s_block_f++; } else s_block_f = 0;
+    if (Sonar_HasSample(SONAR_LEFT)  && !Sonar_IsOpen(SONAR_LEFT))  s_wall_seen_l = 1;
+    if (Sonar_HasSample(SONAR_RIGHT) && !Sonar_IsOpen(SONAR_RIGHT)) s_wall_seen_r = 1;
 
     if (Sonar_FrontBlocked() && !Sonar_IsOpen(SONAR_LEFT) && !Sonar_IsOpen(SONAR_RIGHT)) {
         if (s_deadend < 255) s_deadend++;
@@ -379,6 +392,7 @@ void Solver_Tick(const tick_ctx_t *t) {
             Heading_Reset();
             Sonar_Flush();
             clear_debounce();
+            s_post_turn = 0;
             Debug_P("GO\r\n");
             Drive_Begin();
             s_run_started = millis();
@@ -450,6 +464,22 @@ void Solver_Tick(const tick_ctx_t *t) {
         Debug_StrP(WallMem_TurnName(s_pending_turn));
         Debug_P("\r\n");
 
+        // How far to drive before pivoting. Normally from the leading edge
+        // the sonar just saw; but a side open ever since the last pivot has
+        // no edge in view -- the opening is the next cell, and the axle stops
+        // at its centre. See POST_TURN_CELL_MS.
+        s_approach_ms = APPROACH_TIME_MS;
+        if (s_post_turn &&
+            ((s_pending_turn == WM_TURN_L && !s_wall_seen_l) ||
+             (s_pending_turn == WM_TURN_R && !s_wall_seen_r))) {
+            uint32_t gone = millis() - s_moving_since;
+            s_approach_ms = (gone < POST_TURN_CELL_MS) ? POST_TURN_CELL_MS - gone : 0;
+            Debug_P("opening runs on from the pivot cell -- approach ");
+            Debug_Int((int32_t)s_approach_ms);
+            Debug_P(" ms\r\n");
+        }
+        s_post_turn = 0;
+
         if (s_pending_turn == WM_TURN_F) {
             // Straight on. Ignore this junction until it is behind us.
             s_passing = 1;
@@ -473,7 +503,7 @@ void Solver_Tick(const tick_ctx_t *t) {
             enter(WM_STOPPING);
             break;
         }
-        if (in_state_for(APPROACH_TIME_MS)) {
+        if (in_state_for(s_approach_ms)) {
             Drive_Stop();
             enter(WM_STOPPING);
         }
@@ -568,12 +598,13 @@ void Solver_Tick(const tick_ctx_t *t) {
             Debug_KVF("*** TURN NOT CORRECTED, off by (tenths)", res.final_error_tenths);
             Debug_NL();
         }
+        s_post_turn = (uint8_t)(s_pending_turn != WM_TURN_U);
         enter(WM_RECOVER);
         break;
     }
 
     case WM_RECOVER:
-        if (!s_recover_begun) { Drive_Begin(); s_recover_begun = 1; }
+        if (!s_recover_begun) { Drive_Begin(); s_recover_begun = 1; s_moving_since = millis(); }
         Drive_Tick(rate);
         if (in_state_for(RECOVER_MS)) {
             clear_debounce();

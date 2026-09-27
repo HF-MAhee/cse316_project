@@ -492,6 +492,20 @@
 #define APPROACH_DISTANCE_CM   (SONAR_TO_AXLE_CM + CORRIDOR_HALF_CM)  // 35 cm at 40 cm corridors
 #define APPROACH_TIME_MS       (((uint32_t)APPROACH_DISTANCE_CM * 1000UL) / TRAVEL_SPEED_CMS)
 
+// OPENING RIGHT AFTER A PIVOT. The approach above assumes the sonar saw the
+// opening's leading edge. Straight after a pivot it cannot: the pivot leaves
+// the axle mid-cell, RECOVER_MS then drives ~10-15 cm blind, and a side that
+// is open in the NEXT cell simply reads open from the first sample, its edge
+// long passed. Timing 35 cm from there stopped the axle well past that
+// cell's centre (usart_20260927_211222: left open in the cell after the
+// corner, stopped a cell further on, turned into a wall).
+//
+// So when the chosen side has read open continuously since the pivot, the
+// opening belongs to the next cell and the axle should stop at its centre:
+// one corridor width from where the pivot was. That is measured from the
+// moment the robot started moving again, not from the detection.
+#define POST_TURN_CELL_MS      (((uint32_t)CORRIDOR_WIDTH_CM * 1000UL) / TRAVEL_SPEED_CMS)
+
 // When the front is blocked we cannot drive the full approach distance --
 // stop this far from the wall instead and pivot there. In practice this, not
 // APPROACH_TIME_MS, is what ends the approach at any junction with a front
