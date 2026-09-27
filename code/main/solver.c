@@ -73,6 +73,7 @@ static uint16_t   s_uturn_side_cm = SONAR_NO_ECHO; // that side's reading at the
 // Debounce, same shape as the maze solver's: a single bad ping must never
 // trigger a turn, and a spurious U-turn is the expensive one.
 static uint8_t s_open_l = 0, s_open_r = 0, s_block_f = 0, s_deadend = 0;
+static uint8_t s_passing = 0;   // decided "straight on" here; ignore this junction until it is behind us
 static uint8_t s_recover_begun = 0;
 
 // Run statistics -- this is what the demo is measured with. "segments" counts
@@ -92,7 +93,7 @@ static void enter(wm_state_t st) {
 }
 static uint8_t in_state_for(uint32_t ms) { return ((millis() - s_entered) >= ms) ? 1 : 0; }
 
-static void clear_debounce(void) { s_open_l = s_open_r = s_block_f = s_deadend = 0; }
+static void clear_debounce(void) { s_open_l = s_open_r = s_block_f = s_deadend = s_passing = 0; }
 
 static void update_debounce(void) {
     // A side that has not been pinged since the flush at GO still holds the
@@ -393,14 +394,36 @@ void Solver_Tick(const tick_ctx_t *t) {
             // stored -- which after collapsing is never U, so run 2 never
             // enters a dead end at all.
             f = 0; l = 0; r = 0;
-        } else if (f && l && r) {
-            // Everything open. That is the exit -- or a T junction whose front
-            // wall has not closed in yet, which looks identical from here.
-            Debug_P("all-open, confirming\r\n");
-            enter(WM_CONFIRM_EXIT);
-            break;
-        } else if (!WallMem_IsDecision(f, l, r)) {
-            break;      // plain corridor: drive on, record nothing, consume nothing
+        } else {
+            // ALREADY DECIDED "STRAIGHT ON" AT THIS JUNCTION. Record it once,
+            // not once per tick: it used to clear the opening counters, which
+            // re-confirmed two ticks later and logged the same junction over
+            // and over (FWD_OR_RIGHT x5) -- and every other tick the side read
+            // as a wall, so when the front closed in the robot could see
+            // f=l=r=0 and call a corner a DEAD_END. Now the junction is simply
+            // ignored until both sides show a wall again (it is behind us),
+            // unless the front closes: that is new information and is decided.
+            if (s_passing) {
+                if (s_open_l == 0 && s_open_r == 0) s_passing = 0;
+                else if (f) break;
+            }
+            // Side open, "front open" -- but is the wall ahead this junction's
+            // own far wall? Then forward is NOT open; wait until the front
+            // closes to FRONT_BLOCKED_CM and classify then. See
+            // JUNCTION_FRONT_WALL_CM.
+            if (f && (l || r) && Sonar_Median(SONAR_FRONT) < JUNCTION_FRONT_WALL_CM) break;
+
+            if (f && l && r) {
+                // Everything open. That is the exit -- or a T junction whose
+                // front wall has not closed in yet, which looks identical from
+                // here.
+                Debug_P("all-open, confirming\r\n");
+                enter(WM_CONFIRM_EXIT);
+                break;
+            }
+            if (!WallMem_IsDecision(f, l, r)) {
+                break;  // plain corridor: drive on, record nothing, consume nothing
+            }
         }
 
         s_pending_turn = decide_turn(f, l, r);
@@ -413,9 +436,8 @@ void Solver_Tick(const tick_ctx_t *t) {
         Debug_P("\r\n");
 
         if (s_pending_turn == WM_TURN_F) {
-            // Straight on. Suppress re-triggering on this same opening until
-            // it has passed out of view, exactly as the maze solver does.
-            s_open_l = s_open_r = 0;
+            // Straight on. Ignore this junction until it is behind us.
+            s_passing = 1;
             break;
         }
         if (s_pending_turn == WM_TURN_U) {

@@ -427,6 +427,21 @@
 // derived from it.
 #define FRONT_BLOCKED_CM       25
 
+// A WALL AHEAD THAT BELONGS TO THE JUNCTION. When a side opening is first
+// confirmed, the front sonar is roughly level with the start of the junction
+// cell. If the maze turns there (a corner or a T), the wall ahead is that
+// cell's far wall: under one corridor width away -- logged at 26-35 cm. If the
+// corridor really continues, the next wall ahead is at least one more cell
+// further (80+ cm, i.e. no echo within the 70 cm range). Anything nearer than
+// this is therefore NOT "forward is open": the junction is left unclassified
+// until the front closes to FRONT_BLOCKED_CM, and classified then.
+//
+// Without it, a right-hand corner at 28 cm read as FWD_OR_RIGHT, the left-hand
+// rule said "straight on", and once the front did close the robot had nothing
+// left but DEAD_END -- and U-turned back into the dead end it had just left,
+// over and over (usart_20260927_154550).
+#define JUNCTION_FRONT_WALL_CM (CORRIDOR_WIDTH_CM + 10)
+
 // Consecutive confirmations before believing a side opening.
 #define OPENING_CONFIRM        2
 
