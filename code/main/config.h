@@ -720,7 +720,14 @@
 // e.g. a change of 14760 (gyro reads 2.5% high) -> 67137. The datasheet
 // allows +/-3%, which is 2.7 degrees on every 90 -- more than the nudges'
 // 0.5 degree deadband, and always the same sign.
-#define GYRO_LSB_MS_PER_DEGREE 65500L
+//
+// MEASURED 27 Sep (usart_20260927_153532, 4 turns by hand, clockwise):
+// spin-cal went -5 -> -14237 = 14232 tenths for a true 14400. Taking off the
+// resting drift seen just before the spin (-5 tenths in ~70 s, i.e. ~5 more
+// over the ~76 s spin): 14227. The gyro reads 1.2% LOW, so every "90" was
+// really ~91.1 degrees -- over twice the nudges' 0.5 degree deadband, and the
+// same sign on every turn. 65500 * 14227 / 14400 = 64711.
+#define GYRO_LSB_MS_PER_DEGREE 64711L
 
 // ---------------------------------------------------------------------------
 //  14. RUN SAFETY
