@@ -170,11 +170,19 @@ static uint8_t creep_back(uint8_t max_pulses, uint16_t stop_front_cm, uint16_t m
 // so the last turn's figure is the best first guess for this one.
 static uint16_t s_nudge_k10 = TURN_NUDGE_K10_INIT;
 
+// Learned coast from sweep exit to rest, tenths of a degree: the sweep stops
+// this far short of the target. See TURN_MARGIN10_MIN in config.h.
+static int16_t  s_margin10  = TURN_STOP_MARGIN_DEG * 10;
+
+// Learned power for fine nudges. See TURN_FINE_BELOW_DEG10 in config.h.
+static uint8_t  s_fine_pwm  = TURN_NUDGE_PWM;
+
 static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t *res) {
     const uint8_t cw = (dir == TURN_RIGHT) ? 1 : 0;
     const int32_t target   = (target_tenths * GYRO_LSB_MS_PER_DEGREE) / 10L;
     const int32_t deadband = ((int32_t)TURN_DEADBAND_TENTHS * GYRO_LSB_MS_PER_DEGREE) / 10L;
-    int32_t stop_at = target - ((int32_t)TURN_STOP_MARGIN_DEG * GYRO_LSB_MS_PER_DEGREE);
+    int32_t stop_at = target - (((int32_t)s_margin10 * GYRO_LSB_MS_PER_DEGREE) / 10L);
+    int32_t h_sweep;
 
     uint32_t next_ms = millis() + TURN_TICK_MS;
     uint32_t t_start = millis();
@@ -210,6 +218,7 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
         turn_sample(&next_ms);
     }
     turn_trace("sweep");
+    h_sweep = abs32(Heading_Raw());
 
     // --- PHASE 3: active brake, tracked -----------------------------------
     Power_SetActivity(ACT_TURN_BRAKE);
@@ -223,6 +232,15 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
     // overwrite s_coast_ms, and it is this one that TURN_SETTLE_MS is sized
     // against.
     res->coast_ms = s_coast_ms;
+
+    // Learn the coast for next time: everything from sweep exit to rest.
+    if (!res->timed_out) {
+        int32_t coast10 = ((abs32(Heading_Raw()) - h_sweep) * 10L) / GYRO_LSB_MS_PER_DEGREE;
+        int32_t m = ((int32_t)s_margin10 + coast10) / 2;
+        if (m < TURN_MARGIN10_MIN) m = TURN_MARGIN10_MIN;
+        if (m > TURN_MARGIN10_MAX) m = TURN_MARGIN10_MAX;
+        s_margin10 = (int16_t)m;
+    }
 
     // Residual error from the fixed early-stop margin alone, before any
     // closed-loop nudging. Positive = undershot, negative = overshot -- see
@@ -242,21 +260,28 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
         int32_t err = target - abs32(Heading_Raw());
         int32_t err10, want10, moved10, h_before;
         uint16_t nudge_ms;
+        uint8_t  pwm, fine;
 
         if (abs32(err) <= deadband) break;
         if ((millis() - t_start) > TURN_TIMEOUT_MS) { res->timed_out = 1; break; }
 
         err10   = (abs32(err) * 10L) / GYRO_LSB_MS_PER_DEGREE;
         want10  = (err10 * TURN_NUDGE_AIM_PCT) / 100L;
-        {
+        fine    = (err10 < TURN_FINE_BELOW_DEG10) ? 1 : 0;
+        if (fine) {
+            // Shortest pulse, learned power -- see TURN_FINE_BELOW_DEG10.
+            nudge_ms = TURN_NUDGE_MS_MIN;
+            pwm      = s_fine_pwm;
+        } else {
             int32_t ms = TURN_NUDGE_MS_MIN + (want10 * (int32_t)s_nudge_k10) / 100L;
             if (ms > TURN_NUDGE_MS_MAX) ms = TURN_NUDGE_MS_MAX;
             nudge_ms = (uint16_t)ms;
+            pwm      = TURN_NUDGE_PWM;
         }
 
         h_before = abs32(Heading_Raw());
         Power_SetActivity(ACT_TURN_NUDGE);
-        pulse_tracked((err > 0) ? cw : !cw, TURN_NUDGE_PWM, nudge_ms, &next_ms);
+        pulse_tracked((err > 0) ? cw : !cw, pwm, nudge_ms, &next_ms);
         settle_tracked(TURN_SETTLE_MS, &next_ms);
         res->nudges_used++;
 
@@ -265,10 +290,22 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
         moved10 = ((abs32(Heading_Raw()) - h_before) * 10L) / GYRO_LSB_MS_PER_DEGREE;
         if (err < 0) moved10 = -moved10;
 
-        // Learn k from it. A nudge that moved a measurable amount gives
-        // k = (ms beyond breakaway) / degrees moved; average it in. One that
-        // barely moved means k is too small -- raise it by half.
-        if (moved10 >= 3 && nudge_ms > TURN_NUDGE_MS_MIN) {
+        if (fine) {
+            // Past the target and out of the deadband: too much power. Did
+            // not move at all: too little.
+            if (moved10 > err10 + TURN_DEADBAND_TENTHS) {
+                s_fine_pwm = (s_fine_pwm >= TURN_FINE_PWM_MIN + TURN_FINE_PWM_STEP)
+                           ? (uint8_t)(s_fine_pwm - TURN_FINE_PWM_STEP) : TURN_FINE_PWM_MIN;
+            } else if (moved10 < 3) {
+                s_fine_pwm = (s_fine_pwm + TURN_FINE_PWM_STEP <= TURN_FINE_PWM_MAX)
+                           ? (uint8_t)(s_fine_pwm + TURN_FINE_PWM_STEP) : TURN_FINE_PWM_MAX;
+            }
+        }
+        // Learn k from it (coarse nudges only). A nudge that moved a
+        // measurable amount gives k = (ms beyond breakaway) / degrees moved;
+        // average it in. One that barely moved means k is too small -- raise
+        // it by half.
+        else if (moved10 >= 3 && nudge_ms > TURN_NUDGE_MS_MIN) {
             int32_t k_obs = ((int32_t)(nudge_ms - TURN_NUDGE_MS_MIN) * 100L) / moved10;
             int32_t k_new = ((int32_t)s_nudge_k10 + k_obs) / 2;
             if (k_new < TURN_NUDGE_K10_MIN) k_new = TURN_NUDGE_K10_MIN;
@@ -287,6 +324,7 @@ static void execute_single(int32_t target_tenths, turn_dir_t dir, turn_result_t 
         Debug_Int(res->nudges_used);
         if (err > 0) Debug_P(" fwd "); else Debug_P(" rev ");
         Debug_KVF("ms", (int32_t)nudge_ms);
+        Debug_KVF("pwm", (int32_t)pwm);
         Debug_KVF("hdg10", Heading_DegreesTenths());
         Debug_KVF("k10", (int32_t)s_nudge_k10);
         Debug_NL();
