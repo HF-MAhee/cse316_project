@@ -195,6 +195,10 @@
 // distance, a sudden loss of echo means the wall got CLOSER, not that it
 // vanished. Walls do not disappear in 60 ms.
 #define SONAR_NEAR_LATCH_CM    12
+// ...but for at most this many lost echoes in a row (each sensor pings every
+// 60 ms, so 3 = 180 ms). After that a lost echo means what it says: nothing
+// in range. Without the limit the latch never let go -- see Sonar_Task().
+#define SONAR_NEAR_LATCH_PINGS 3
 
 // A reading older than this is stale and must not be trusted.
 #define SONAR_STALE_MS         250

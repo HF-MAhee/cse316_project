@@ -17,6 +17,7 @@ typedef struct {
     uint16_t last_good;   // last in-range measurement, for NO_ECHO disambiguation
     uint8_t  has_good;
     uint8_t  too_close;   // wall present but closer than the sensor can measure
+    uint8_t  latch_n;     // consecutive lost echoes currently latched as too-close
     uint32_t stamp;
     uint8_t  confident;   // 0 if taken during a rocking window
 } sonar_t;
@@ -69,6 +70,7 @@ void Sonar_Init(void) {
         s[i].last_good = 0;
         s[i].has_good  = 0;
         s[i].too_close = 0;
+        s[i].latch_n   = 0;
         s[i].stamp  = 0;
         s[i].confident = 0;
         for (k = 0; k < HIST; k++) s[i].hist[k] = SONAR_NO_ECHO;
@@ -128,11 +130,25 @@ void Sonar_Task(void) {
     // so a very near wall often produces a plain timeout that looks exactly
     // like open space. History resolves it: if the last good reading was
     // close, the wall did not vanish in 60 ms -- it got nearer.
-    if (v == SONAR_NO_ECHO && p->has_good && p->last_good <= SONAR_NEAR_LATCH_CM) {
-        v = SONAR_TOO_CLOSE;
-    }
-
-    if (v == SONAR_TOO_CLOSE) {
+    //
+    // But only for a few pings. This used to latch for good: the synthesized
+    // "too close" was stored as the last good reading, so the NEXT lost echo
+    // latched again, and so on forever. Hold a hand 3 cm from the sonar, take
+    // it away, and the reading stayed at 3 with nothing in front of it -- the
+    // robot stopped short of walls that were far away, and a side wall that
+    // had been under 12 cm could hide an opening behind it. A wall really that
+    // close keeps producing echoes some of the time (and the robot is stopping
+    // or steering away meanwhile); open space never does. So a latch lasts at
+    // most SONAR_NEAR_LATCH_PINGS lost echoes in a row, and only a REAL echo
+    // re-arms it.
+    if (v == SONAR_NO_ECHO && p->has_good && p->last_good <= SONAR_NEAR_LATCH_CM &&
+        p->latch_n < SONAR_NEAR_LATCH_PINGS) {
+        p->latch_n++;
+        p->too_close = 1;
+        v = SONAR_MIN_VALID_CM;     // last_good untouched: a guess is not a measurement
+    } else if (v == SONAR_TOO_CLOSE) {
+        // A real sub-minimum echo: the wall is there, and this IS a measurement.
+        p->latch_n   = 0;
         p->too_close = 1;
         // Report the closest measurable distance so the controller sees a
         // real number to steer away from, not a sentinel.
@@ -140,6 +156,7 @@ void Sonar_Task(void) {
         p->last_good = SONAR_MIN_VALID_CM;
         p->has_good  = 1;
     } else {
+        if (v != SONAR_NO_ECHO) p->latch_n = 0;
         p->too_close = 0;
         if (v != SONAR_NO_ECHO) {
             p->last_good = v;
@@ -263,6 +280,7 @@ void Sonar_Flush(void) {
         s[i].last_good = 0;
         s[i].has_good  = 0;
         s[i].too_close = 0;
+        s[i].latch_n   = 0;
         s[i].confident = 0;
         s[i].stamp = 0;
         for (k = 0; k < HIST; k++) s[i].hist[k] = SONAR_NO_ECHO;
