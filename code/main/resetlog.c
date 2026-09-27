@@ -12,15 +12,60 @@
 // for SRAM to forget. That makes them a direct physical test of WHICH kind of
 // fault happened, which the MCUCSR flags alone cannot tell you:
 //
-//   magic intact  -> SRAM held its charge -> VCC never collapsed.
-//                    The reset came from the brown-out detector or the RESET
-//                    pin. Suspect a supply DIP or electrical noise.
-//   magic lost    -> SRAM was wiped -> VCC really did fall to near zero.
-//                    That is a BROKEN CONNECTION, not a dip.
+//   magic intact  -> SRAM held its charge -> VCC never collapsed. The MCUCSR
+//                    flag then says which: watchdog (a firmware hang -- not
+//                    power), RESET pin, a brief power dropout (power-on flag),
+//                    or a brown-out dip.
+//   magic lost    -> SRAM was wiped -> VCC really did fall to near zero: a
+//                    normal switch-on, or a broken connection.
 #define BOOT_MAGIC 0xB007
 static uint16_t s_boot_magic  __attribute__((section(".noinit")));
 static uint16_t s_boot_count  __attribute__((section(".noinit")));
 static uint8_t  s_prev_flags  __attribute__((section(".noinit")));
+
+static void print_activity(uint8_t a) {
+    switch (a) {
+        case ACT_IDLE:        Debug_P("idle (motors off)");    break;
+        case ACT_DRIVE_KICK:  Debug_P("the DRIVE KICK");       break;
+        case ACT_DRIVING:     Debug_P("normal driving");       break;
+        case ACT_DRIVE_BRAKE: Debug_P("the DRIVE BRAKE");      break;
+        case ACT_TURN_KICK:   Debug_P("the PIVOT KICK");       break;
+        case ACT_TURN_SWEEP:  Debug_P("the pivot sweep");      break;
+        case ACT_TURN_BRAKE:  Debug_P("the pivot brake");      break;
+        case ACT_TURN_NUDGE:  Debug_P("a pivot nudge");        break;
+        case ACT_REVERSING:   Debug_P("the reverse");          break;
+        default:              Debug_P("an unknown phase");     break;
+    }
+}
+
+// What the rail was doing just before the reset, and whether that points at
+// the supply. Only meaningful when SRAM survived (Power_CrashValid()).
+static void report_rail(uint8_t watchdog) {
+    uint16_t mn;
+    if (!(Power_CrashValid() && Power_CrashMinMv() > 0)) return;
+    mn = Power_CrashMinMv();
+    Debug_P("  BEFORE THE RESET: lowest rail seen was ");
+    Debug_Int((int32_t)mn);
+    Debug_P(" mV, during ");
+    print_activity(Power_CrashActivity());
+    Debug_NL();
+    Debug_Flush();
+
+    if (mn < POWER_MIN_SAFE_MV) {
+        Debug_P("  -> The rail was SAGGING before the reset: a current-delivery\r\n");
+        Debug_P("     problem -- capacitance, wire or connector resistance, or\r\n");
+        Debug_P("     motor current sharing the logic ground.\r\n");
+    } else if (watchdog) {
+        // The watchdog does not care about the supply. A healthy rail here
+        // rules the supply out, which is the whole point of printing it.
+        Debug_P("  -> The rail was fine, so this was NOT a power problem.\r\n");
+    } else {
+        Debug_P("  -> The rail was healthy at the last sample, then gone: an\r\n");
+        Debug_P("     abrupt collapse, not a sag -- a connection opening, or a\r\n");
+        Debug_P("     regulator cutting out. Capacitors will NOT fix this.\r\n");
+    }
+    Debug_Flush();
+}
 
 void ResetLog_Report(void) {
     uint8_t f = MCUCSR;
@@ -45,85 +90,53 @@ void ResetLog_Report(void) {
     Debug_KVF("  raw", f);
     Debug_KVF("boot#", (int32_t)s_boot_count);
     Debug_NL();
+    Debug_Flush();
 
-    if (s_boot_count == 1) {
-        Debug_P("  cold start (SRAM was empty) -- baseline, nothing to read"
-                " into this one\r\n");
-    } else if (ram_survived) {
+    // Explained by the FIRST matching cause, most specific first, so each
+    // reset gets one verdict instead of several that contradict each other.
+    if (!ram_survived) {
+        // SRAM wiped: the supply really went away. On a normal switch-on the
+        // brown-out flag comes with power-on (the rail ramps up through the
+        // BOD threshold) -- that is expected, not a fault.
+        if (f & (1 << PORF)) {
+            Debug_P("  cold start -- normal power-on, nothing to read into it\r\n");
+        } else {
+            Debug_P("  *** SRAM WAS WIPED without a power-on flag: the supply fell\r\n");
+            Debug_P("  to near zero -- an intermittent power connection.\r\n");
+        }
+        Debug_Flush();
+    } else {
         Debug_P("  *** UNEXPECTED RESET #");
         Debug_Int((int32_t)s_boot_count);
         Debug_P(" ***\r\n");
+        Debug_Flush();
         if (f & (1 << WDRF)) {
+            Debug_P("  WATCHDOG -> the firmware stopped feeding it for 250 ms: a\r\n");
+            Debug_P("  hang, not a supply fault. Last activity: ");
+            print_activity(Power_CrashActivity());
+            Debug_NL();
             Debug_Flush();
-            Debug_P("  WATCHDOG -> the firmware FROZE with the motors running\r\n");
-            Debug_P("  (most likely an I2C wait on the gyro that never ended).\r\n");
+            report_rail(1);
+        } else if (f & (1 << EXTRF)) {
+            Debug_P("  RESET PIN pulled low: no 10k pull-up + 100nF on pin 9, or\r\n");
+            Debug_P("  a dangling ISP cable picking up noise.\r\n");
             Debug_Flush();
-        }
-        Debug_P("  SRAM SURVIVED, so VCC did NOT collapse. This was the\r\n");
-        Debug_P("  brown-out detector or the RESET pin, not a broken wire.\r\n");
-        if (f & (1 << EXTRF)) {
-            Debug_P("  EXTERNAL flag -> the RESET PIN was pulled low. On a\r\n");
-            Debug_P("  bare build that usually means no 10k pull-up + 100nF on\r\n");
-            Debug_P("  pin 9, or a dangling ISP cable picking up noise.\r\n");
+        } else if (f & (1 << PORF)) {
+            Debug_P("  POWER DROPPED OUT briefly (power-on flag, but SRAM kept its\r\n");
+            Debug_P("  contents): the supply blinked off and back -- a switch,\r\n");
+            Debug_P("  battery holder or jumper contact opening for a moment.\r\n");
+            Debug_Flush();
+            report_rail(0);
         } else if (f & (1 << BORF)) {
-            Debug_P("  BROWNOUT flag -> the rail dipped below the BOD\r\n");
-            Debug_P("  threshold. Decoupling and bulk capacitance.\r\n");
+            Debug_P("  BROWNOUT: the rail dipped below the BOD threshold.\r\n");
+            Debug_Flush();
+            report_rail(0);
         }
         Debug_KVF("  previous boot's flags", (int32_t)s_prev_flags);
         Debug_NL();
         Debug_NL();
-    } else {
-        Debug_P("  *** SRAM WAS WIPED -> VCC actually fell to near zero ***\r\n");
-        Debug_P("  That is an INTERMITTENT POWER CONNECTION, not a dip:\r\n");
-        Debug_P("  battery holder contacts, a VCC/GND jumper, or the buck\r\n");
-        Debug_P("  converter dropping out. Note the boot# restarting at 1\r\n");
-        Debug_P("  every time is itself the evidence.\r\n");
-    }
-    // ---- what the rail was doing when the MCU died -----------------------
-    // This is the measurement that separates the two candidate faults, and they
-    // need opposite fixes. See the commentary in power.h.
-    if (Power_CrashValid() && Power_CrashMinMv() > 0) {
-        uint16_t mn = Power_CrashMinMv();
-        Debug_P("  BEFORE THE RESET: lowest rail seen was ");
-        Debug_Int((int32_t)mn);
-        Debug_P(" mV, during ");
-        switch (Power_CrashActivity()) {
-            case ACT_IDLE:        Debug_P("idle (motors off)");    break;
-            case ACT_DRIVE_KICK:  Debug_P("the DRIVE KICK");       break;
-            case ACT_DRIVING:     Debug_P("normal driving");       break;
-            case ACT_DRIVE_BRAKE: Debug_P("the DRIVE BRAKE");      break;
-            case ACT_TURN_KICK:   Debug_P("the PIVOT KICK");       break;
-            case ACT_TURN_SWEEP:  Debug_P("the pivot sweep");      break;
-            case ACT_TURN_BRAKE:  Debug_P("the pivot brake");      break;
-            case ACT_TURN_NUDGE:  Debug_P("a pivot nudge");        break;
-            case ACT_REVERSING:   Debug_P("the reverse");          break;
-            default:              Debug_P("an unknown phase");     break;
-        }
-        Debug_NL();
-        Debug_Flush();
-
-        // The interpretation, spelled out, because the two cases look identical
-        // in the MCUCSR flags and are fixed by completely different work.
-        if (mn < POWER_MIN_SAFE_MV) {
-            Debug_P("  -> The rail was ALREADY SAGGING before it died, so this"
-                    " is a\r\n");
-            Debug_P("     current-delivery problem: capacitance, wire"
-                    " resistance,\r\n");
-            Debug_P("     connector resistance, shared ground return.\r\n");
-        } else {
-            Debug_P("  -> The rail was STILL HEALTHY at the last sample, then"
-                    " gone.\r\n");
-            Debug_P("     That is an ABRUPT COLLAPSE, not a sag: a regulator"
-                    " shutting\r\n");
-            Debug_P("     off (over-current hiccup / thermal / two regulators"
-                    "\r\n");
-            Debug_P("     fighting) or a connection momentarily opening. Adding"
-                    "\r\n");
-            Debug_P("     capacitors will NOT fix this one.\r\n");
-        }
         Debug_Flush();
     }
 
-    Debug_Flush();
     s_prev_flags = f;
 }
