@@ -571,15 +571,6 @@
 // more miss and the budget ran out. 28 puts those same turns at 79-91: mostly
 // within a nudge or two, and the loop corrects an overshoot just as well.
 #define TURN_STOP_MARGIN_DEG   28
-//
-// ...and that is now only the STARTING value. The coast depends on the battery
-// (18-29 degrees on the 24 Sep pack, 30-40 on a fresh one on 27 Sep), so no
-// fixed number is right for long: with 28 the fresh pack landed every turn at
-// 92-103 degrees. The turn now measures its own coast (sweep exit to rest)
-// every time and averages it into the margin for the next turn, within these
-// limits (tenths of a degree).
-#define TURN_MARGIN10_MIN      150
-#define TURN_MARGIN10_MAX      450
 
 // HOW CLOSE IS "90". Was 2 degrees, and it was the error that accumulated:
 // the nudges approach from below and stopped the moment they were inside it,
@@ -608,21 +599,6 @@
 #define TURN_NUDGE_K10_MIN     10
 #define TURN_NUDGE_K10_MAX     300
 #define TURN_NUDGE_AIM_PCT     90
-
-// FINE NUDGES. Below TURN_FINE_BELOW_DEG10 of error the length model above is
-// useless: the chassis sticks, then slips, and on a fresh pack even the
-// shortest (15 ms) pulse at TURN_NUDGE_PWM slipped 2.5-3.7 degrees -- 15, 17
-// and 22 ms all moved it the same ~3.5. With a +/-0.5 degree target that
-// cannot converge: usart_20260927_154550 shows 88.2 / 90.7 / 88.4 / 90.5 ...
-// for all ten nudges, three turns ending "NOT CORRECTED". What sets the slip is
-// the ENERGY, i.e. the power, not the length. So a fine nudge is always
-// TURN_NUDGE_MS_MIN long, and its PWM is learned: lowered by
-// TURN_FINE_PWM_STEP every time it overshoots out of the deadband, raised
-// when it fails to move, and kept across turns.
-#define TURN_FINE_BELOW_DEG10  40
-#define TURN_FINE_PWM_MIN      70
-#define TURN_FINE_PWM_MAX      160
-#define TURN_FINE_PWM_STEP     10
 
 // 5 was routinely almost used up (4 or 5 nudges on half the logged turns), and
 // a turn that runs out is simply left off-angle. With the tighter deadband
